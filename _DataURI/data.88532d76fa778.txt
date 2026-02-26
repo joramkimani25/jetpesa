@@ -1,0 +1,1 @@
+chrome-extension://mpiodijhokgodhhofbcjdecpffjipkle/lib/single-file-hooks-frames.js
