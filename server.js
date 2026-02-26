@@ -12,9 +12,16 @@
  */
 
 const http   = require('http');
+const https  = require('https');
 const fs     = require('fs');
 const path   = require('path');
 const crypto = require('crypto');
+
+// ─── MegaPay Config ───────────────────────────────────────────────────────────
+const MEGAPAY_API_KEY = process.env.MEGAPAY_API_KEY || 'MGPYstmtnwjI';
+const MEGAPAY_EMAIL   = process.env.MEGAPAY_EMAIL   || 'jramtech25@gmail.com';
+const MEGAPAY_STK_URL = 'https://megapay.co.ke/backend/v1/initiatestk';
+const MEGAPAY_STATUS_URL = 'https://megapay.co.ke/backend/v1/transactionstatus';
 
 const MODE        = process.env.MODE || 'both'; // 'player' | 'admin' | 'both'
 const PLAYER_PORT = process.env.PORT || 3000;
@@ -190,6 +197,10 @@ function getUser(req) {
   return users.get(token) || null;
 }
 
+// ─── Pending Deposits (keyed by transaction_request_id) ──────────────────────
+// Stores { userId, amount, token } until MegaPay webhook confirms payment
+const pendingDeposits = new Map();
+
 // ─── Game Loop ────────────────────────────────────────────────────────────────
 function startWaiting() {
   const cp  = nextCrashPoint();
@@ -362,10 +373,144 @@ function handleAPI(pathname, req, res) {
 
   if (pathname === '/api/mpesa/stkpush' && req.method === 'POST') {
     readBody(req, body => {
-      const amount = parseFloat(body.amount) || 100;
       const user   = getUser(req);
-      setTimeout(() => { if (user) user.balance += amount; }, 2000);
-      json(res, { success: true, message: `Demo: KES ${amount} added to your balance in ~2s`, CheckoutRequestID: 'ws_CO_DEMO_' + Date.now() });
+      const amount = Math.max(1, parseFloat(body.amount) || 100);
+      // Normalize phone: accept 07xx, 2547xx, +2547xx
+      let phone = String(body.phone || (user && user.phone) || '').replace(/\s+/g, '');
+      if (phone.startsWith('+')) phone = phone.slice(1);
+      if (phone.startsWith('0'))  phone = '254' + phone.slice(1);
+
+      if (!phone || phone.length < 12) {
+        json(res, { success: false, message: 'Valid phone number required' }, 400);
+        return;
+      }
+
+      const reference = 'DEP' + Date.now();
+      const payload   = JSON.stringify({
+        api_key:   MEGAPAY_API_KEY,
+        email:     MEGAPAY_EMAIL,
+        amount:    String(amount),
+        msisdn:    phone,
+        reference,
+      });
+
+      const options = {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+      };
+
+      const mpReq = https.request(MEGAPAY_STK_URL, options, mpRes => {
+        let raw = '';
+        mpRes.on('data', d => raw += d);
+        mpRes.on('end', () => {
+          let result;
+          try { result = JSON.parse(raw); } catch { result = {}; }
+          console.log('[MegaPay STK]', result);
+
+          if (result.success === '200' || result.success === 200) {
+            // Store pending deposit so webhook can credit the user
+            if (user) {
+              pendingDeposits.set(result.transaction_request_id, {
+                userId: user.id,
+                token:  user.accessToken,
+                amount,
+              });
+            }
+            json(res, {
+              success:              true,
+              message:              `STK Push sent to ${phone}. Enter your M-Pesa PIN to complete.`,
+              transaction_request_id: result.transaction_request_id,
+              CheckoutRequestID:    result.transaction_request_id,
+            });
+          } else {
+            json(res, { success: false, message: result.message || result.massage || 'Failed to initiate STK push. Try again.' }, 502);
+          }
+        });
+      });
+
+      mpReq.on('error', err => {
+        console.error('[MegaPay STK error]', err.message);
+        json(res, { success: false, message: 'Could not reach MegaPay. Please try again.' }, 502);
+      });
+      mpReq.write(payload);
+      mpReq.end();
+    }); return true;
+  }
+
+  // ── MegaPay Webhook (set this URL in your MegaPay dashboard) ───────────────
+  // URL: https://cashpoa-production.up.railway.app/api/mpesa/webhook
+  if (pathname === '/api/mpesa/webhook' && req.method === 'POST') {
+    readBody(req, body => {
+      console.log('[MegaPay Webhook]', JSON.stringify(body));
+      const code = parseInt(body.ResponseCode);
+      if (code === 0) {
+        // Successful payment — find the pending deposit and credit user
+        const pending = pendingDeposits.get(body.TransactionID) ||
+                        pendingDeposits.get(body.CheckoutRequestID);
+        if (pending) {
+          const user = users.get(pending.token);
+          if (user) {
+            user.balance += pending.amount;
+            console.log(`[MegaPay] Credited KES ${pending.amount} to ${user.username} | new balance: ${user.balance}`);
+          }
+          pendingDeposits.delete(body.TransactionID);
+          pendingDeposits.delete(body.CheckoutRequestID);
+        }
+      } else {
+        console.log(`[MegaPay] Payment failed: ${body.ResponseDescription} (code ${code})`);
+        pendingDeposits.delete(body.TransactionID);
+      }
+      // Always respond 200 to acknowledge
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'received' }));
+    }); return true;
+  }
+
+  // ── MegaPay Transaction Status Poll ────────────────────────────────────────
+  if (pathname === '/api/mpesa/status' && req.method === 'POST') {
+    readBody(req, body => {
+      if (!body.transaction_request_id) {
+        json(res, { success: false, message: 'transaction_request_id required' }, 400);
+        return;
+      }
+      const payload = JSON.stringify({
+        api_key:                MEGAPAY_API_KEY,
+        email:                  MEGAPAY_EMAIL,
+        transaction_request_id: body.transaction_request_id,
+      });
+      const options = {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+      };
+      const mpReq = https.request(MEGAPAY_STATUS_URL, options, mpRes => {
+        let raw = '';
+        mpRes.on('data', d => raw += d);
+        mpRes.on('end', () => {
+          let result;
+          try { result = JSON.parse(raw); } catch { result = {}; }
+          console.log('[MegaPay Status]', result);
+          // If completed and not yet credited via webhook, credit now
+          if (result.TransactionStatus === 'Completed' && result.TransactionCode === '0') {
+            const pending = pendingDeposits.get(body.transaction_request_id);
+            if (pending) {
+              const user = users.get(pending.token);
+              if (user) {
+                user.balance += pending.amount;
+                console.log(`[MegaPay Status] Credited KES ${pending.amount} to ${user.username}`);
+                result._credited = true;
+                result._newBalance = user.balance;
+              }
+              pendingDeposits.delete(body.transaction_request_id);
+            }
+          }
+          json(res, result);
+        });
+      });
+      mpReq.on('error', err => {
+        json(res, { success: false, message: 'Could not reach MegaPay.' }, 502);
+      });
+      mpReq.write(payload);
+      mpReq.end();
     }); return true;
   }
 
