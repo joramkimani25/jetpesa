@@ -24,6 +24,7 @@ const MEGAPAY_STK_URL = 'https://megapay.co.ke/backend/v1/initiatestk';
 const MEGAPAY_STATUS_URL = 'https://megapay.co.ke/backend/v1/transactionstatus';
 
 const MODE        = process.env.MODE || 'both'; // 'player' | 'admin' | 'both'
+const IS_RAILWAY  = !!process.env.RAILWAY_ENVIRONMENT;
 const PLAYER_PORT = process.env.PORT || 3000;
 const SIGNAL_PORT = 3001;
 const ADMIN_PORT  = MODE === 'admin' ? (process.env.PORT || 3002) : 3002;
@@ -995,7 +996,7 @@ function handleSupabase(pathname, req, res) {
 // ─── Fetch-interceptor injected into every admin HTML page ───────────────────
 // Rewrites browser calls to xckttcubxhxnueeggzvm.supabase.co → admin server
 const ADMIN_PUBLIC_URL = process.env.ADMIN_PUBLIC_URL || `http://localhost:${ADMIN_PORT}`;
-const PLAYER_PUBLIC_URL = process.env.PLAYER_PUBLIC_URL || `http://localhost:${PLAYER_PORT}`;
+const PLAYER_PUBLIC_URL = process.env.PLAYER_PUBLIC_URL || (IS_RAILWAY ? `https://jetpesa-production.up.railway.app` : `http://localhost:${PLAYER_PORT}`);
 
 function makeFetchInterceptor(targetUrl) {
   return `<script>
@@ -1243,8 +1244,6 @@ const adminServer = http.createServer((req, res) => {
 });
 
 // ─── Start ────────────────────────────────────────────────────────────────────
-const IS_RAILWAY = !!process.env.RAILWAY_ENVIRONMENT;
-
 if (MODE === 'player' || MODE === 'both') {
   playerServer.listen(PLAYER_PORT, () => {
     console.log(`🎮 Player App  → http://localhost:${PLAYER_PORT}`);
