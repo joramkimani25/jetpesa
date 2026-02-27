@@ -794,25 +794,50 @@ h1{font-size:26px;font-weight:700;color:#fff;margin-bottom:24px}
   if (pathname === '/api/mpesa/webhook' && req.method === 'POST') {
     readBody(req, body => {
       console.log('[MegaPay Webhook]', JSON.stringify(body));
+
+      // Save raw callback to db.json for audit trail
+      if (!db.mpesa_callbacks) db.mpesa_callbacks = [];
+      db.mpesa_callbacks.push({ ...body, received_at: new Date().toISOString() });
+      saveDB(db);
+
       const code = parseInt(body.ResponseCode);
       if (code === 0) {
-        // Successful payment — find the pending deposit and credit user
+        // Look up pending deposit by any matching key MegaPay might send
         const pending = pendingDeposits.get(body.TransactionID) ||
-                        pendingDeposits.get(body.CheckoutRequestID);
-        if (pending) {
-          const user = users.get(pending.token);
+                        pendingDeposits.get(body.CheckoutRequestID) ||
+                        pendingDeposits.get(body.MerchantRequestID);
+
+        // Also try to match by iterating (MegaPay TransactionID = our transaction_request_id)
+        let matched = pending;
+        if (!matched) {
+          for (const [key, val] of pendingDeposits.entries()) {
+            if (key === body.TransactionID || key === body.CheckoutRequestID) {
+              matched = val;
+              pendingDeposits.delete(key);
+              break;
+            }
+          }
+        }
+
+        if (matched) {
+          const user = users.get(matched.token);
           if (user) {
-            user.balance += pending.amount;
+            user.balance += matched.amount;
             persistUser(user);
-            addTransaction(user.id, 'deposit', pending.amount, `M-Pesa ${body.TransactionID || ''}`);
-            console.log(`[MegaPay] Credited KES ${pending.amount} to ${user.username} | new balance: ${user.balance}`);
+            addTransaction(user.id, 'deposit', matched.amount, `M-Pesa ${body.TransactionReceipt || body.TransactionID || ''} via ${body.Msisdn || ''}`);
+            console.log(`[MegaPay] Credited KES ${matched.amount} to ${user.username} | new balance: ${user.balance}`);
           }
           pendingDeposits.delete(body.TransactionID);
           pendingDeposits.delete(body.CheckoutRequestID);
+        } else {
+          console.log(`[MegaPay] No pending deposit found for TransactionID=${body.TransactionID} CheckoutRequestID=${body.CheckoutRequestID}`);
         }
       } else {
         console.log(`[MegaPay] Payment failed: ${body.ResponseDescription} (code ${code})`);
+        // Store failed transaction too
+        addTransaction('system', 'deposit_failed', parseInt(body.TransactionAmount) || 0, `Failed: ${body.ResponseDescription} | ${body.Msisdn || ''}`);
         pendingDeposits.delete(body.TransactionID);
+        pendingDeposits.delete(body.CheckoutRequestID);
       }
       // Always respond 200 to acknowledge
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -843,6 +868,12 @@ h1{font-size:26px;font-weight:700;color:#fff;margin-bottom:24px}
           let result;
           try { result = JSON.parse(raw); } catch { result = {}; }
           console.log('[MegaPay Status]', result);
+
+          // Save status poll response to db.json
+          if (!db.mpesa_callbacks) db.mpesa_callbacks = [];
+          db.mpesa_callbacks.push({ ...result, source: 'status_poll', received_at: new Date().toISOString() });
+          saveDB(db);
+
           // If completed and not yet credited via webhook, credit now
           if (result.TransactionStatus === 'Completed' && result.TransactionCode === '0') {
             const pending = pendingDeposits.get(body.transaction_request_id);
