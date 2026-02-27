@@ -898,9 +898,28 @@ h1{font-size:26px;font-weight:700;color:#fff;margin-bottom:24px}
 
           // Determine normalized status for frontend
           // MegaPay may return: success='200' + TransactionStatus + ResultCode
+          // IMPORTANT: When polled before user enters PIN, MegaPay returns non-zero ResultCode
+          // which does NOT mean failed — it means still processing. Only mark as failed
+          // for explicit terminal failure codes.
+          const rc = String(result.ResultCode || '');
           const isCompleted = (result.TransactionStatus === 'Completed' || result.success === '200' || result.success === 200) &&
-                              (result.ResultCode === '0' || result.ResultCode === 0 || result.TransactionCode === '0' || result.TransactionCode === 0);
-          const isFailed = result.ResultCode && result.ResultCode !== '0' && result.ResultCode !== 0;
+                              (rc === '0' || result.TransactionCode === '0' || result.TransactionCode === 0);
+          
+          // Only these codes are truly terminal failures (user cancelled, wrong PIN, insufficient funds)
+          const terminalFailureCodes = ['1032', '1', '2001', '1037', '1025'];
+          // 1032 = cancelled by user, 1 = insufficient funds, 2001 = wrong PIN, 
+          // 1037 = timeout (DS), 1025 = limit exceeded
+          const isTerminalFail = terminalFailureCodes.includes(rc) && 
+                                  result.TransactionStatus !== 'Pending' &&
+                                  result.TransactionStatus !== 'Processing';
+          
+          // Also check if MegaPay says explicitly "The service request is processed successfully" 
+          // but ResultCode is not 0 — that means STK was sent but user hasn't responded yet
+          const isStillProcessing = result.ResponseDescription === 'The service request is processed successfully.' ||
+                                    result.ResponseDescription === 'Success. Request accepted for processing' ||
+                                    result.TransactionStatus === 'Pending' ||
+                                    result.TransactionStatus === 'Processing' ||
+                                    (!result.ResultCode && !result.TransactionStatus);
 
           if (isCompleted) {
             // Credit user if not yet credited via webhook
@@ -916,10 +935,15 @@ h1{font-size:26px;font-weight:700;color:#fff;margin-bottom:24px}
               pendingDeposits.delete(txReqId);
             }
             json(res, { status: 'completed', result_desc: result.ResultDesc || 'Payment successful' });
-          } else if (isFailed) {
+          } else if (isStillProcessing) {
+            // User hasn't entered PIN yet — keep polling
+            json(res, { status: 'pending', result_desc: 'Waiting for you to enter M-Pesa PIN...' });
+          } else if (isTerminalFail) {
             pendingDeposits.delete(txReqId);
             json(res, { status: 'failed', result_desc: result.ResultDesc || 'Payment failed or cancelled' });
           } else {
+            // Unknown state — treat as pending to keep polling (safe default)
+            console.log('[MegaPay Status] Unknown state, treating as pending:', JSON.stringify(result));
             json(res, { status: 'pending', result_desc: result.ResultDesc || 'Waiting for payment confirmation' });
           }
         });
