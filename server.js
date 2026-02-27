@@ -1098,16 +1098,21 @@ function makeFetchInterceptor(targetUrl) {
   var _f=window.fetch.bind(window);
   window.fetch=function(i,o){
     var u=(i instanceof Request)?i.url:String(i);
+    if(!o) o={};
+    if(!o.headers) o.headers={};
+    // Always refresh token from localStorage
+    var tok=localStorage.getItem('accessToken');
+    // Inject auth header on ALL requests to our server (including /api/ routes)
+    if(tok && tok!=='undefined' && tok!=='null'){
+      var isOwn=(u.indexOf('/api/')!==-1||u.indexOf('/rest/')!==-1||u.indexOf('/auth/')!==-1||u.indexOf(H)!==-1);
+      if(isOwn && !o.headers['Authorization'] && !o.headers['authorization']){
+        if(o.headers instanceof Headers){o.headers.set('Authorization','Bearer '+tok)}
+        else{o.headers['Authorization']='Bearer '+tok}
+      }
+    }
     if(u.indexOf(H)!==-1){
       var p=new URL(u);
       var loc=L+p.pathname+p.search;
-      // Inject auth header for Supabase auth calls
-      if(!o) o={};
-      if(!o.headers) o.headers={};
-      if(at && !o.headers['Authorization'] && !o.headers['authorization']){
-        if(o.headers instanceof Headers){o.headers.set('Authorization','Bearer '+at)}
-        else{o.headers['Authorization']='Bearer '+at}
-      }
       i=(i instanceof Request)?new Request(loc,{method:i.method,headers:o.headers||i.headers,body:i.body,mode:'cors',credentials:'omit'}):loc;
     }
     return _f(i,o);
