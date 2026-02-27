@@ -418,6 +418,13 @@ function handleAPI(pathname, req, res) {
     json(res, { current, upcoming }); return true;
   }
 
+  // Placeholder for missing promo images
+  if (pathname.startsWith('/images/promo/')) {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200"><rect width="400" height="200" rx="16" fill="#111827"/><text x="200" y="90" text-anchor="middle" fill="white" font-family="Arial" font-size="24" font-weight="bold">Welcome to JetPesa!</text><text x="200" y="130" text-anchor="middle" fill="#9ca3af" font-family="Arial" font-size="14">Deposit &amp; Start Winning</text></svg>`;
+    res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=86400' });
+    res.end(svg); return true;
+  }
+
   // ── Terms & Conditions page ────────────────────────────────────────────────
   if (pathname === '/terms') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -964,6 +971,39 @@ function handleSupabase(pathname, req, res) {
 
   if (pathname === '/rest/v1/themes') {
     json(res, themes); return true;
+  }
+
+  // User settings stub — frontend queries this after login
+  if (pathname === '/rest/v1/user_settings') {
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      json(res, []); return true; // empty array = no custom settings yet
+    }
+    if (req.method === 'POST' || req.method === 'PATCH') {
+      readBody(req, body => { json(res, [body]); });
+      return true;
+    }
+  }
+
+  // Transactions stub — frontend queries this for wallet history
+  if (pathname === '/rest/v1/transactions') {
+    const user = getUser(req);
+    if (user) {
+      const txs = getUserTransactions(user.id).slice(0, 10).map(t => ({
+        id: t.id,
+        type: t.type,
+        amount: Math.abs(t.amount),
+        status: 'completed',
+        created_at: t.timestamp,
+        description: t.details,
+      }));
+      json(res, txs); return true;
+    }
+    json(res, []); return true;
+  }
+
+  // Catch-all for any other /rest/v1/ routes — return empty array
+  if (pathname.startsWith('/rest/v1/')) {
+    json(res, []); return true;
   }
 
   // Supabase auth stub — return a valid session so the app stays logged in
