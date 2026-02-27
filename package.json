@@ -1,7 +1,7 @@
 {
-  "name": "cashpoa",
+  "name": "jetpesa",
   "version": "1.0.0",
-  "description": "CashPoa Game Server",
+  "description": "JetPesa Game Server",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

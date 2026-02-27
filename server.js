@@ -1,5 +1,5 @@
 /**
- * CashPoa Unified Local Dev Server
+ * JetPesa Unified Local Dev Server
  * ─────────────────────────────────────────────────────────────────
  *  Port 3000  →  Player app   (cashpoa.com/)
  *  Port 3001  →  Admin panel  (cashpoa.com admin/cashpoa.com/)
@@ -18,14 +18,15 @@ const path   = require('path');
 const crypto = require('crypto');
 
 // ─── MegaPay Config ───────────────────────────────────────────────────────────
-const MEGAPAY_API_KEY = process.env.MEGAPAY_API_KEY || 'MGPYstmtnwjI';
-const MEGAPAY_EMAIL   = process.env.MEGAPAY_EMAIL   || 'jramtech25@gmail.com';
+const MEGAPAY_API_KEY = process.env.MEGAPAY_API_KEY || 'MGPYQGu8Q8f6';
+const MEGAPAY_EMAIL   = process.env.MEGAPAY_EMAIL   || 'joramkimani25@gmail.com';
 const MEGAPAY_STK_URL = 'https://megapay.co.ke/backend/v1/initiatestk';
 const MEGAPAY_STATUS_URL = 'https://megapay.co.ke/backend/v1/transactionstatus';
 
 const MODE        = process.env.MODE || 'both'; // 'player' | 'admin' | 'both'
 const PLAYER_PORT = process.env.PORT || 3000;
-const ADMIN_PORT  = MODE === 'admin' ? (process.env.PORT || 3001) : 3001;
+const SIGNAL_PORT = 3001;
+const ADMIN_PORT  = MODE === 'admin' ? (process.env.PORT || 3002) : 3002;
 const PLAYER_DIR  = path.join(__dirname, 'cashpoa.com');
 const ADMIN_DIR   = path.join(__dirname, 'cashpoa.com admin', 'cashpoa.com');
 
@@ -49,15 +50,32 @@ const MIME = {
 };
 
 // ─── Game Config ──────────────────────────────────────────────────────────────
-const CRASH_POOL = [
-  2.31, 1.74, 4.12, 23.75, 2.88, 19.11, 1.52, 25.66, 3.41,
-  26.7, 1.98, 25.05, 6.77, 20.91, 2.14, 17.4, 42.93, 3.65,
-  24.35, 1.88, 18.5, 5.22, 31.2, 2.07, 27.8, 1.63, 22.1,
-  8.14, 35.6, 2.55, 19.9, 3.9, 28.3, 1.77, 15.8, 7.3,
-  44.1, 2.2, 21.7, 4.5, 17.8, 1.91, 33.4, 3.1, 26.1,
-  2.44, 38.9, 5.8, 24.8, 1.55,
-];
-let queueIdx = 0;
+// ─── Cryptographic crash point generator ─────────────────────────────────────
+// Weighted: ~10% low (1.01-10x), ~55% mid (20-60x), ~25% high (60-150x), ~10% moon (150-550x)
+function generateCrashPoint() {
+  const rand = crypto.randomBytes(4).readUInt32BE() / 0xFFFFFFFF;
+  const fine = crypto.randomBytes(4).readUInt32BE() / 0xFFFFFFFF;
+  let value;
+  if (rand < 0.10)      value = 1.01 + fine * 8.99;    // low
+  else if (rand < 0.65)  value = 20 + fine * 40;        // mid
+  else if (rand < 0.90)  value = 60 + fine * 90;        // high
+  else                   value = 150 + fine * 400;      // moon
+  return parseFloat(value.toFixed(2));
+}
+
+// ─── Pre-generated crash queue (signal page reads from this) ─────────────────
+// Always keeps 10+ upcoming crash points ready so signal page shows REAL values
+const QUEUE_SIZE = 10;
+const crashQueue = [];   // [{id, multiplier}]
+function fillQueue() {
+  while (crashQueue.length < QUEUE_SIZE) {
+    crashQueue.push({ id: crypto.randomUUID(), multiplier: generateCrashPoint() });
+  }
+}
+fillQueue(); // pre-fill on startup
+
+// Secret signal key — only someone who knows this can see upcoming crash values
+const SIGNAL_SECRET = crypto.randomBytes(16).toString('hex');
 
 const DOMAIN_ID  = 'ef4fa632-149c-4556-a356-cd762746d350';
 const ALGORITHM  = 'greedy_1.05';
@@ -65,21 +83,24 @@ const WAIT_MS    = 8000;   // 8 s countdown
 const CRASH_PAUSE= 5000;   // 5 s after crash
 const TICK_MS    = 100;    // 100 ms tick rate
 
-// Multiplier formula: m(t) = round(100 * (1 + 0.0055 * t^2.2)) / 100  (t in seconds)
 function getMultiplierAtTime(seconds) {
   return Math.round(100 * (1 + 0.0055 * Math.pow(seconds, 2.2))) / 100;
 }
 
+// Pull the next crash point from front of queue (real value)
 function nextCrashPoint() {
-  const cp = CRASH_POOL[queueIdx % CRASH_POOL.length];
-  queueIdx++;
-  return parseFloat(cp.toFixed(2));
+  if (crashQueue.length === 0) fillQueue();
+  const entry = crashQueue.shift();
+  fillQueue(); // refill
+  return entry.multiplier;
 }
 
+// Peek at the REAL upcoming crash points (what signal page sees)
 function peekQueue(count = 5) {
-  return Array.from({ length: count }, (_, i) => ({
-    id: crypto.randomUUID(),
-    multiplier: CRASH_POOL[(queueIdx + i) % CRASH_POOL.length],
+  fillQueue();
+  return crashQueue.slice(0, count).map(entry => ({
+    id: entry.id,
+    multiplier: entry.multiplier,
     status: 'pending',
     created_at: new Date().toISOString(),
     domain_id: DOMAIN_ID,
@@ -90,8 +111,8 @@ function peekQueue(count = 5) {
 
 // ─── History ──────────────────────────────────────────────────────────────────
 const history = [
-  47.32, 23.53, 34.1, 29.14, 26.48, 28.12, 29.92,
-  16.8, 42.2, 24.6, 21.9, 21.22, 19.46, 39.22,
+  47.32, 123.53, 34.1, 29.14, 526.48, 28.12, 29.92,
+  16.8, 82.2, 24.6, 151.9, 21.22, 19.46, 339.22,
 ].map(multiplier => ({
   id: crypto.randomUUID(),
   multiplier,
@@ -113,8 +134,8 @@ let game = {
 // ─── Domain Settings (admin-editable at runtime) ──────────────────────────────
 let domainSettings = {
   id: DOMAIN_ID,
-  domain: 'cashpoa.com',
-  brand_name: 'CashPoa',
+  domain: 'jetpesa.com',
+  brand_name: 'JetPesa',
   signal_url: 'sig',
   primary_color: '#000000',
   logo_url: '',
@@ -174,27 +195,106 @@ function broadcast(event, data) {
   for (const c of clients) sendSSE(c, event, data);
 }
 
-// ─── Mock Users ───────────────────────────────────────────────────────────────
-const users = new Map();
+// ─── JSON File Database ───────────────────────────────────────────────────────
+const DB_PATH = path.join(__dirname, 'db.json');
 
-function makeUser(phone, username) {
+function loadDB() {
+  try {
+    if (fs.existsSync(DB_PATH)) return JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
+  } catch (e) { console.error('[DB] Load error:', e.message); }
+  return { users: {}, tokens: {}, transactions: [] };
+}
+
+function saveDB(db) {
+  try { fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2)); }
+  catch (e) { console.error('[DB] Save error:', e.message); }
+}
+
+let db = loadDB();
+
+// ─── User helpers (persistent) ────────────────────────────────────────────────
+const users = new Map(); // token → user (runtime cache)
+
+// Rehydrate in-memory token map from DB on startup
+for (const [userId, u] of Object.entries(db.users)) {
+  if (u.accessToken) users.set(u.accessToken, u);
+}
+
+function normalizePhone(raw) {
+  let p = String(raw || '').replace(/\s+/g, '').replace(/^\+/, '');
+  if (p.startsWith('0')) p = '254' + p.slice(1);
+  // Handle bare number without country code (e.g. 712345678)
+  if (p.length === 9 && /^[17]/.test(p)) p = '254' + p;
+  return p;
+}
+
+function createUser(phone, username) {
+  phone = normalizePhone(phone);
+  // Check if phone already registered
+  const existing = Object.values(db.users).find(u => u.phone === phone);
+  if (existing) return { error: 'Phone number already registered. Please log in.' };
+
   const id    = crypto.randomUUID();
-  const token = 'mock_' + crypto.randomBytes(16).toString('hex');
+  const token = 'tok_' + crypto.randomBytes(16).toString('hex');
   const user  = {
     id, username: username || `user_${phone.slice(-4)}`,
     phone, email: null,
-    balance: 5000,
-    referralCode: 'CASH' + Math.random().toString(36).substring(2, 6).toUpperCase(),
+    balance: 0,
+    referralCode: 'JET' + Math.random().toString(36).substring(2, 6).toUpperCase(),
     accessToken: token,
     refreshToken: 'refresh_' + crypto.randomBytes(8).toString('hex'),
+    createdAt: new Date().toISOString(),
   };
+  db.users[id] = user;
   users.set(token, user);
+  saveDB(db);
+  console.log(`[DB] New user: ${user.username} (${phone})`);
+  return user;
+}
+
+function loginUser(phone) {
+  phone = normalizePhone(phone);
+  const user = Object.values(db.users).find(u => u.phone === phone);
+  if (!user) return { error: 'No account found with this phone number. Please sign up.' };
+  // Rotate token on login
+  const oldToken = user.accessToken;
+  users.delete(oldToken);
+  const newToken = 'tok_' + crypto.randomBytes(16).toString('hex');
+  user.accessToken = newToken;
+  user.refreshToken = 'refresh_' + crypto.randomBytes(8).toString('hex');
+  users.set(newToken, user);
+  db.users[user.id] = user;
+  saveDB(db);
+  console.log(`[DB] Login: ${user.username} (${phone})`);
   return user;
 }
 
 function getUser(req) {
   const token = (req.headers.authorization || '').replace('Bearer ', '').trim();
   return users.get(token) || null;
+}
+
+function persistUser(user) {
+  db.users[user.id] = user;
+  saveDB(db);
+}
+
+function addTransaction(userId, type, amount, details) {
+  const tx = {
+    id: crypto.randomUUID(),
+    userId,
+    type,       // 'deposit' | 'withdrawal' | 'bet' | 'cashout'
+    amount,
+    details: details || '',
+    timestamp: new Date().toISOString(),
+  };
+  db.transactions.push(tx);
+  saveDB(db);
+  return tx;
+}
+
+function getUserTransactions(userId) {
+  return db.transactions.filter(t => t.userId === userId).reverse();
 }
 
 // ─── Pending Deposits (keyed by transaction_request_id) ──────────────────────
@@ -305,6 +405,231 @@ function handleAPI(pathname, req, res) {
     res.writeHead(200); res.end('OK'); return true;
   }
 
+  // ── Signal dashboard (available on /signal on any port) ──────────────────
+  if (pathname === '/signal') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(signalDashboardHTML()); return true;
+  }
+  if (pathname === '/signal/data') {
+    fillQueue();
+    const current = { roundId: game.roundId, status: game.status, crashPoint: game.crashPoint, multiplier: game.multiplier };
+    const upcoming = crashQueue.map((e, i) => ({ position: i + 1, multiplier: e.multiplier }));
+    json(res, { current, upcoming }); return true;
+  }
+
+  // ── Terms & Conditions page ────────────────────────────────────────────────
+  if (pathname === '/terms') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Terms of Use – JetPesa</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a0f;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-serif;line-height:1.7}
+.wrap{max-width:720px;margin:0 auto;padding:32px 20px 60px}
+.back{display:inline-flex;align-items:center;gap:6px;color:#10b981;text-decoration:none;font-size:14px;margin-bottom:24px}
+.back:hover{text-decoration:underline}
+h1{font-size:28px;font-weight:700;color:#fff;margin-bottom:4px}
+.updated{font-size:13px;color:#888;margin-bottom:32px}
+h2{font-size:18px;color:#10b981;margin:28px 0 8px;font-weight:600}
+p,li{font-size:15px;color:#ccc;margin-bottom:10px}
+ul{padding-left:24px;margin-bottom:12px}
+li{margin-bottom:6px}
+.footer{text-align:center;margin-top:48px;padding-top:24px;border-top:1px solid #1e1e2e;font-size:13px;color:#555}
+</style>
+</head>
+<body>
+<div class="wrap">
+<a class="back" href="javascript:void(0)" onclick="if(history.length>1){history.back()}else{location.href='/'}">&#8592; Back</a>
+<h1>Terms of Use</h1>
+<p class="updated">Last updated: February 2026</p>
+
+<h2>1. Acceptance of Terms</h2>
+<p>By accessing or using our platform, you agree to be bound by these Terms of Use. If you do not agree to these terms, please do not use our services.</p>
+
+<h2>2. Eligibility</h2>
+<p>You must be at least 18 years of age to use this platform. By using our services, you represent and warrant that you are of legal age in your jurisdiction to form a binding contract.</p>
+
+<h2>3. Account Registration</h2>
+<p>When you create an account, you must provide accurate and complete information. You are responsible for maintaining the security of your account credentials and for all activities that occur under your account.</p>
+
+<h2>4. Responsible Gaming</h2>
+<p>We encourage responsible gaming. Please set limits for yourself and never bet more than you can afford to lose. If you feel you may have a gambling problem, please seek help from appropriate resources.</p>
+
+<h2>5. Deposits and Withdrawals</h2>
+<p>All deposits and withdrawals are subject to our payment processing policies. We reserve the right to verify your identity before processing any transactions. Minimum deposit and withdrawal amounts may apply.</p>
+
+<h2>6. Game Rules</h2>
+<p>Each game has its own set of rules. By participating in any game, you agree to abide by those rules. The outcome of all games is determined by our certified random number generator.</p>
+
+<h2>7. Prohibited Activities</h2>
+<p>You agree not to engage in any of the following activities:</p>
+<ul>
+<li>Using automated software or bots</li>
+<li>Colluding with other users</li>
+<li>Exploiting bugs or errors in the platform</li>
+<li>Money laundering or fraudulent activities</li>
+<li>Creating multiple accounts</li>
+</ul>
+
+<h2>8. Limitation of Liability</h2>
+<p>We are not liable for any losses incurred while using our platform. All games involve risk, and you play at your own discretion. We do not guarantee any winnings or outcomes.</p>
+
+<h2>9. Changes to Terms</h2>
+<p>We reserve the right to modify these terms at any time. Continued use of the platform after changes constitutes acceptance of the new terms.</p>
+
+<h2>10. Contact Us</h2>
+<p>If you have any questions about these Terms of Use, please contact our support team.</p>
+
+<div class="footer">&copy; 2026 JetPesa. All rights reserved.</div>
+</div>
+</body>
+</html>`);
+    return true;
+  }
+
+  // ── Profile page ───────────────────────────────────────────────────────────
+  if (pathname === '/profile') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Profile – JetPesa</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a0f;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-serif;line-height:1.7}
+.wrap{max-width:480px;margin:0 auto;padding:32px 20px 60px}
+.back{display:inline-flex;align-items:center;gap:6px;color:#10b981;text-decoration:none;font-size:14px;margin-bottom:24px}
+.back:hover{text-decoration:underline}
+h1{font-size:26px;font-weight:700;color:#fff;margin-bottom:24px}
+.avatar{width:80px;height:80px;border-radius:50%;background:linear-gradient(135deg,#10b981,#059669);display:flex;align-items:center;justify-content:center;font-size:32px;font-weight:700;color:#fff;margin:0 auto 20px}
+.card{background:#12121a;border:1px solid #1e1e2e;border-radius:12px;padding:20px;margin-bottom:16px}
+.card-title{font-size:13px;color:#888;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px}
+.row{display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid #1e1e2e}
+.row:last-child{border-bottom:none}
+.row-label{font-size:14px;color:#999}
+.row-value{font-size:14px;color:#fff;font-weight:500}
+.balance-box{text-align:center;padding:24px;background:linear-gradient(135deg,#10b98120,#05966910);border:1px solid #10b98140;border-radius:12px;margin-bottom:16px}
+.balance-label{font-size:13px;color:#888;margin-bottom:4px}
+.balance-amount{font-size:36px;font-weight:700;color:#10b981}
+.balance-currency{font-size:16px;color:#999;margin-left:4px}
+.referral-box{text-align:center;padding:16px;background:#1a1a2e;border:1px dashed #10b98160;border-radius:12px;margin-bottom:16px}
+.referral-code{font-size:22px;font-weight:700;color:#10b981;letter-spacing:2px;margin:8px 0}
+.referral-label{font-size:13px;color:#888}
+.copy-btn{background:#10b981;color:#000;border:none;padding:8px 20px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;margin-top:8px}
+.copy-btn:hover{background:#059669}
+.btn-row{display:flex;gap:10px;margin-top:20px}
+.btn{flex:1;padding:14px;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;text-align:center;text-decoration:none}
+.btn-deposit{background:#10b981;color:#000}
+.btn-deposit:hover{background:#059669}
+.btn-logout{background:#1e1e2e;color:#ef4444;border:1px solid #ef444440}
+.btn-logout:hover{background:#ef444420}
+.not-logged-in{text-align:center;padding:60px 20px;color:#888}
+.not-logged-in a{color:#10b981}
+.footer{text-align:center;margin-top:32px;font-size:12px}
+.footer a{color:#888;text-decoration:none;margin:0 8px}
+.footer a:hover{color:#10b981}
+</style>
+</head>
+<body>
+<div class="wrap">
+<a class="back" href="javascript:void(0)" onclick="if(history.length>1){history.back()}else{location.href='/'}">&#8592; Back</a>
+<h1>My Profile</h1>
+
+<div id="logged-out" class="not-logged-in" style="display:none">
+  <p>You are not logged in.</p>
+  <p><a href="/">Go to Home</a> to sign in.</p>
+</div>
+
+<div id="profile" style="display:none">
+  <div class="avatar" id="avatar-init">?</div>
+
+  <div class="balance-box">
+    <div class="balance-label">Wallet Balance</div>
+    <div><span class="balance-amount" id="p-balance">0</span><span class="balance-currency">KES</span></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Account Info</div>
+    <div class="row"><span class="row-label">Username</span><span class="row-value" id="p-username">—</span></div>
+    <div class="row"><span class="row-label">Phone</span><span class="row-value" id="p-phone">—</span></div>
+    <div class="row"><span class="row-label">Email</span><span class="row-value" id="p-email">—</span></div>
+    <div class="row"><span class="row-label">User ID</span><span class="row-value" id="p-id" style="font-size:11px;word-break:break-all">—</span></div>
+  </div>
+
+  <div class="referral-box">
+    <div class="referral-label">Your Referral Code</div>
+    <div class="referral-code" id="p-referral">—</div>
+    <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('p-referral').textContent);this.textContent='Copied!';setTimeout(()=>this.textContent='Copy Code',1500)">Copy Code</button>
+  </div>
+
+  <div class="btn-row">
+    <a class="btn btn-deposit" href="/">Deposit</a>
+    <button class="btn btn-logout" onclick="localStorage.removeItem('accessToken');localStorage.removeItem('token');location.href='/'">Log Out</button>
+  </div>
+
+  <div class="card" id="history-card" style="margin-top:16px;display:none">
+    <div class="card-title">Transaction History</div>
+    <div id="tx-list" style="max-height:320px;overflow-y:auto"></div>
+    <div id="tx-empty" style="text-align:center;color:#666;padding:16px;display:none">No transactions yet</div>
+  </div>
+</div>
+
+<div class="footer">
+  <a href="/terms">Terms of Use</a>
+</div>
+</div>
+
+<script>
+(function(){
+  var token = localStorage.getItem('accessToken') || localStorage.getItem('token') || '';
+  if (!token) { document.getElementById('logged-out').style.display='block'; return; }
+  fetch('/api/auth/me', { headers: { 'Authorization': 'Bearer ' + token } })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if (d.error || !d.user) { document.getElementById('logged-out').style.display='block'; return; }
+      var u = d.user, w = d.wallet || {};
+      document.getElementById('p-username').textContent = u.username || '—';
+      document.getElementById('p-phone').textContent = u.phone || '—';
+      document.getElementById('p-email').textContent = u.email || 'Not set';
+      document.getElementById('p-id').textContent = u.id || '—';
+      document.getElementById('p-balance').textContent = (w.balance || 0).toLocaleString();
+      document.getElementById('p-referral').textContent = u.referralCode || '—';
+      var init = (u.username || '?')[0].toUpperCase();
+      document.getElementById('avatar-init').textContent = init;
+      document.getElementById('profile').style.display = 'block';
+      // Load transaction history
+      fetch('/api/wallet/history', { headers: { 'Authorization': 'Bearer ' + token } })
+        .then(function(r){ return r.json(); })
+        .then(function(txs){
+          var card = document.getElementById('history-card');
+          var list = document.getElementById('tx-list');
+          var empty = document.getElementById('tx-empty');
+          card.style.display = 'block';
+          if (!txs.length) { empty.style.display = 'block'; return; }
+          txs.slice(0, 30).forEach(function(tx){
+            var icon = tx.type === 'deposit' ? '💰' : tx.type === 'withdrawal' ? '📤' : tx.type === 'cashout' ? '🎉' : '🎲';
+            var color = tx.amount >= 0 ? '#10b981' : '#ef4444';
+            var sign = tx.amount >= 0 ? '+' : '';
+            var date = new Date(tx.timestamp).toLocaleDateString('en-KE', {day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
+            var row = document.createElement('div');
+            row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #1e1e2e';
+            row.innerHTML = '<div><span style=\"margin-right:8px\">'+icon+'</span><span style=\"font-size:13px;color:#ccc;text-transform:capitalize\">'+tx.type+'</span><div style=\"font-size:11px;color:#666;margin-top:2px\">'+date+'</div></div><div style=\"font-size:14px;font-weight:600;color:'+color+'\">'+sign+'KES '+Math.abs(tx.amount).toLocaleString()+'</div>';
+            list.appendChild(row);
+          });
+        }).catch(function(){});
+    })
+    .catch(function(){ document.getElementById('logged-out').style.display='block'; });
+})();
+</script>
+</body>
+</html>`);
+    return true;
+  }
+
   if (pathname === '/api/game/state') {
     json(res, gameStatePayload()); return true;
   }
@@ -326,15 +651,21 @@ function handleAPI(pathname, req, res) {
 
   if (pathname === '/api/auth/login' && req.method === 'POST') {
     readBody(req, body => {
-      const user = makeUser(body.phone || '254700000000', body.username || null);
-      json(res, { user: { id: user.id, username: user.username, phone: user.phone, email: null, referralCode: user.referralCode }, wallet: { balance: user.balance }, session: { accessToken: user.accessToken, refreshToken: user.refreshToken } });
+      const phone = body.phone || '';
+      if (!phone) { json(res, { error: 'Phone number required' }, 400); return; }
+      const result = loginUser(phone);
+      if (result.error) { json(res, { error: result.error }, 401); return; }
+      json(res, { user: { id: result.id, username: result.username, phone: result.phone, email: result.email, referralCode: result.referralCode }, wallet: { balance: result.balance }, session: { accessToken: result.accessToken, refreshToken: result.refreshToken } });
     }); return true;
   }
 
   if (pathname === '/api/auth/signup' && req.method === 'POST') {
     readBody(req, body => {
-      const user = makeUser(body.phone || '254700000000', body.username || null);
-      json(res, { user: { id: user.id, username: user.username, phone: user.phone, email: null, referralCode: user.referralCode }, wallet: { balance: user.balance }, session: { accessToken: user.accessToken, refreshToken: user.refreshToken } });
+      const phone = body.phone || '';
+      if (!phone) { json(res, { error: 'Phone number required' }, 400); return; }
+      const result = createUser(phone, body.username || null);
+      if (result.error) { json(res, { error: result.error }, 409); return; }
+      json(res, { user: { id: result.id, username: result.username, phone: result.phone, email: result.email, referralCode: result.referralCode }, wallet: { balance: result.balance }, session: { accessToken: result.accessToken, refreshToken: result.refreshToken } });
     }); return true;
   }
 
@@ -349,8 +680,13 @@ function handleAPI(pathname, req, res) {
     readBody(req, body => {
       const user   = getUser(req);
       const amount = Math.max(10, parseFloat(body.amount) || 10);
-      if (user) user.balance = Math.max(0, user.balance - amount);
-      json(res, { success: true, bet: { id: crypto.randomUUID(), amount, roundId: game.roundId }, newBalance: user ? user.balance : 5000 });
+      if (user) {
+        if (user.balance < amount) { json(res, { success: false, message: 'Insufficient balance. Please deposit first.' }, 400); return; }
+        user.balance = Math.max(0, user.balance - amount);
+        persistUser(user);
+        addTransaction(user.id, 'bet', -amount, `Round ${game.roundId.slice(0,8)}`);
+      }
+      json(res, { success: true, bet: { id: crypto.randomUUID(), amount, roundId: game.roundId }, newBalance: user ? user.balance : 0 });
       broadcast('bet_placed', { roundId: game.roundId });
     }); return true;
   }
@@ -361,8 +697,12 @@ function handleAPI(pathname, req, res) {
       const mult   = parseFloat(body.multiplier) || 1;
       const amount = parseFloat(body.amount) || 10;
       const payout = parseFloat((amount * mult).toFixed(2));
-      if (user) user.balance += payout;
-      json(res, { success: true, payout, newBalance: user ? user.balance : 5000 });
+      if (user) {
+        user.balance += payout;
+        persistUser(user);
+        addTransaction(user.id, 'cashout', payout, `${mult}x on ${amount}`);
+      }
+      json(res, { success: true, payout, newBalance: user ? user.balance : 0 });
     }); return true;
   }
 
@@ -374,7 +714,11 @@ function handleAPI(pathname, req, res) {
   if (pathname === '/api/mpesa/stkpush' && req.method === 'POST') {
     readBody(req, body => {
       const user   = getUser(req);
-      const amount = Math.max(1, parseFloat(body.amount) || 100);
+      const amount = parseFloat(body.amount) || 0;
+      if (amount < 100) {
+        json(res, { success: false, message: 'Minimum deposit is KES 100' }, 400);
+        return;
+      }
       // Normalize phone: accept 07xx, 2547xx, +2547xx
       let phone = String(body.phone || (user && user.phone) || '').replace(/\s+/g, '');
       if (phone.startsWith('+')) phone = phone.slice(1);
@@ -438,7 +782,7 @@ function handleAPI(pathname, req, res) {
   }
 
   // ── MegaPay Webhook (set this URL in your MegaPay dashboard) ───────────────
-  // URL: https://cashpoa-production.up.railway.app/api/mpesa/webhook
+  // URL: https://jetpesa-production.up.railway.app/api/mpesa/webhook
   if (pathname === '/api/mpesa/webhook' && req.method === 'POST') {
     readBody(req, body => {
       console.log('[MegaPay Webhook]', JSON.stringify(body));
@@ -451,6 +795,8 @@ function handleAPI(pathname, req, res) {
           const user = users.get(pending.token);
           if (user) {
             user.balance += pending.amount;
+            persistUser(user);
+            addTransaction(user.id, 'deposit', pending.amount, `M-Pesa ${body.TransactionID || ''}`);
             console.log(`[MegaPay] Credited KES ${pending.amount} to ${user.username} | new balance: ${user.balance}`);
           }
           pendingDeposits.delete(body.TransactionID);
@@ -496,6 +842,8 @@ function handleAPI(pathname, req, res) {
               const user = users.get(pending.token);
               if (user) {
                 user.balance += pending.amount;
+                persistUser(user);
+                addTransaction(user.id, 'deposit', pending.amount, `M-Pesa status poll`);
                 console.log(`[MegaPay Status] Credited KES ${pending.amount} to ${user.username}`);
                 result._credited = true;
                 result._newBalance = user.balance;
@@ -518,9 +866,21 @@ function handleAPI(pathname, req, res) {
     readBody(req, body => {
       const amount = parseFloat(body.amount) || 100;
       const user   = getUser(req);
-      if (user) user.balance = Math.max(0, user.balance - amount);
-      json(res, { success: true, message: `Demo: KES ${amount} withdrawal queued`, newBalance: user ? user.balance : 0 });
+      if (!user) { json(res, { success: false, message: 'Unauthorized' }, 401); return; }
+      if (user.balance < amount) { json(res, { success: false, message: 'Insufficient balance' }, 400); return; }
+      user.balance = Math.max(0, user.balance - amount);
+      persistUser(user);
+      addTransaction(user.id, 'withdrawal', -amount, `Withdraw KES ${amount}`);
+      json(res, { success: true, message: `KES ${amount} withdrawal queued`, newBalance: user.balance });
     }); return true;
+  }
+
+  // ── Transaction history ────────────────────────────────────────────────────
+  if (pathname === '/api/wallet/history') {
+    const user = getUser(req);
+    if (!user) { json(res, { error: 'Unauthorized' }, 401); return true; }
+    json(res, getUserTransactions(user.id));
+    return true;
   }
 
   if (pathname === '/api/broadcast' && req.method === 'POST') {
@@ -543,19 +903,40 @@ function handleAPI(pathname, req, res) {
     }); return true;
   }
 
-  // ── Admin-only: replace crash pool ─────────────────────────────────────────
+  // ── Admin-only: inject specific crash values into the queue ────────────────
   if (pathname === '/api/admin/crash-pool' && req.method === 'POST') {
     readBody(req, body => {
       if (Array.isArray(body.pool) && body.pool.length > 0) {
-        CRASH_POOL.length = 0;
-        body.pool.forEach(x => CRASH_POOL.push(parseFloat(x)));
-        queueIdx = 0;
-        console.log('[Admin] Crash pool updated:', CRASH_POOL.slice(0, 5), '...');
-        json(res, { ok: true, pool: CRASH_POOL });
+        // Clear queue and inject the provided values at the front
+        crashQueue.length = 0;
+        body.pool.forEach(x => crashQueue.push({ id: crypto.randomUUID(), multiplier: parseFloat(x) }));
+        fillQueue(); // pad with random values after the injected ones
+        console.log('[Admin] Queue injected:', crashQueue.slice(0, 5).map(e => e.multiplier), '...');
+        json(res, { ok: true, queue: crashQueue.map(e => e.multiplier) });
       } else {
         json(res, { ok: false, error: 'Provide { pool: [number, ...] }' }, 400);
       }
     }); return true;
+  }
+
+  // ── Secret Signal API — shows upcoming crash values ────────────────────────
+  // Access: /api/signal?key=<SIGNAL_SECRET>
+  if (pathname === '/api/signal') {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const key = url.searchParams.get('key');
+    if (key !== SIGNAL_SECRET) {
+      json(res, { error: 'Invalid signal key' }, 403); return true;
+    }
+    fillQueue();
+    const current = {
+      roundId: game.roundId,
+      status: game.status,
+      crashPoint: game.crashPoint,
+      multiplier: game.multiplier,
+    };
+    const upcoming = crashQueue.map((e, i) => ({ position: i + 1, id: e.id, multiplier: e.multiplier }));
+    json(res, { current, upcoming });
+    return true;
   }
 
   return false; // not handled
@@ -584,10 +965,27 @@ function handleSupabase(pathname, req, res) {
     json(res, themes); return true;
   }
 
-  // Supabase auth stub (admin panel may call /auth/v1/*)
+  // Supabase auth stub — return a valid session so the app stays logged in
   if (pathname.startsWith('/auth/v1/')) {
-    json(res, { access_token: 'mock_admin_' + Date.now(), token_type: 'bearer',
-                user: { id: 'admin-001', email: 'admin@cashpoa.com', role: 'admin' } });
+    const user = getUser(req);
+    if (user) {
+      const session = {
+        access_token: user.accessToken,
+        refresh_token: user.refreshToken,
+        token_type: 'bearer',
+        expires_in: 86400,
+        expires_at: Math.floor(Date.now() / 1000) + 86400,
+        user: { id: user.id, email: user.email || `${user.phone}@jetpesa.com`, phone: user.phone, role: 'authenticated' },
+      };
+      // /auth/v1/token?grant_type=refresh_token
+      if (pathname.includes('/token')) {
+        json(res, session); return true;
+      }
+      // /auth/v1/session
+      json(res, { data: { session }, error: null }); return true;
+    }
+    // No auth header — return empty session (don't break the app)
+    json(res, { data: { session: null }, error: null });
     return true;
   }
 
@@ -597,18 +995,48 @@ function handleSupabase(pathname, req, res) {
 // ─── Fetch-interceptor injected into every admin HTML page ───────────────────
 // Rewrites browser calls to xckttcubxhxnueeggzvm.supabase.co → admin server
 const ADMIN_PUBLIC_URL = process.env.ADMIN_PUBLIC_URL || `http://localhost:${ADMIN_PORT}`;
-const FETCH_INTERCEPTOR = `<script>
-/* CashPoa: proxy Supabase → admin server */
+const PLAYER_PUBLIC_URL = process.env.PLAYER_PUBLIC_URL || `http://localhost:${PLAYER_PORT}`;
+
+function makeFetchInterceptor(targetUrl) {
+  return `<script>
+/* JetPesa: proxy Supabase → local server + session sync */
 (function(){
+  // Sync our accessToken into Supabase's storage key so getSession() finds it
+  var SK='sb-session';
+  var at=localStorage.getItem('accessToken');
+  if(at && at!=='undefined' && at!=='null'){
+    var existing=null;
+    try{existing=JSON.parse(localStorage.getItem(SK))}catch(e){}
+    if(!existing || existing.access_token!==at){
+      var sess={
+        access_token:at,
+        refresh_token:localStorage.getItem('refreshToken')||at,
+        token_type:'bearer',
+        expires_in:86400,
+        expires_at:Math.floor(Date.now()/1000)+86400,
+        user:{id:'user',role:'authenticated'}
+      };
+      localStorage.setItem(SK,JSON.stringify(sess));
+    }
+  }
+
+  // Intercept fetch/XHR to redirect Supabase calls to local server
   var H='xckttcubxhxnueeggzvm.supabase.co';
-  var L='${ADMIN_PUBLIC_URL}';
+  var L='${targetUrl}';
   var _f=window.fetch.bind(window);
   window.fetch=function(i,o){
     var u=(i instanceof Request)?i.url:String(i);
     if(u.indexOf(H)!==-1){
       var p=new URL(u);
       var loc=L+p.pathname+p.search;
-      i=(i instanceof Request)?new Request(loc,{method:i.method,headers:i.headers,body:i.body,mode:'cors',credentials:'omit'}):loc;
+      // Inject auth header for Supabase auth calls
+      if(!o) o={};
+      if(!o.headers) o.headers={};
+      if(at && !o.headers['Authorization'] && !o.headers['authorization']){
+        if(o.headers instanceof Headers){o.headers.set('Authorization','Bearer '+at)}
+        else{o.headers['Authorization']='Bearer '+at}
+      }
+      i=(i instanceof Request)?new Request(loc,{method:i.method,headers:o.headers||i.headers,body:i.body,mode:'cors',credentials:'omit'}):loc;
     }
     return _f(i,o);
   };
@@ -622,6 +1050,10 @@ const FETCH_INTERCEPTOR = `<script>
   };
 })();
 </script>`;
+}
+
+const FETCH_INTERCEPTOR       = makeFetchInterceptor(ADMIN_PUBLIC_URL);
+const PLAYER_FETCH_INTERCEPTOR = makeFetchInterceptor(PLAYER_PUBLIC_URL);
 
 // ─── Static file server ───────────────────────────────────────────────────────
 function serveStatic(staticDir, pathname, res, isAdmin) {
@@ -656,10 +1088,11 @@ function serveStatic(staticDir, pathname, res, isAdmin) {
     const ext  = path.extname(filePath).toLowerCase();
     const mime = MIME[ext] || 'application/octet-stream';
 
-    // Inject the Supabase proxy into every HTML page served by the admin server
-    if (isAdmin && ext === '.html') {
+    // Inject the Supabase proxy into every HTML page
+    if (ext === '.html') {
       let html = data.toString('utf8');
-      html = html.replace('<head>', '<head>' + FETCH_INTERCEPTOR);
+      const interceptor = isAdmin ? FETCH_INTERCEPTOR : PLAYER_FETCH_INTERCEPTOR;
+      html = html.replace('<head>', '<head>' + interceptor);
       res.writeHead(200, { 'Content-Type': mime });
       res.end(html);
     } else {
@@ -679,10 +1112,123 @@ const playerServer = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
   if (handleAPI(pathname, req, res)) return;
+  if (handleSupabase(pathname, req, res)) return;
   serveStatic(PLAYER_DIR, pathname, res, false);
 });
 
-// ─── Admin server  (port 3001) ────────────────────────────────────────────────
+// ─── Signal Predictor server  (port 3001) ─────────────────────────────────────
+function signalDashboardHTML() {
+  fillQueue();
+  const upcoming = crashQueue.map((e, i) => ({ pos: i + 1, multiplier: e.multiplier }));
+  const current = { roundId: game.roundId, status: game.status, crashPoint: game.crashPoint, multiplier: game.multiplier };
+
+  return `<!DOCTYPE html><html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JetPesa Signal</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0a0a0f; color:#fff; font-family:'Segoe UI',system-ui,sans-serif; min-height:100vh; }
+  .header { background:linear-gradient(135deg,#0f1923,#1a1a2e); padding:20px 30px; border-bottom:1px solid rgba(255,255,255,0.05); display:flex; align-items:center; justify-content:space-between; }
+  .header h1 { font-size:24px; background:linear-gradient(135deg,#00ff88,#00d4ff); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+  .header .badge { background:rgba(0,255,136,0.1); border:1px solid rgba(0,255,136,0.3); padding:6px 14px; border-radius:20px; font-size:12px; color:#00ff88; }
+  .container { max-width:900px; margin:0 auto; padding:24px; }
+  .live-card { background:linear-gradient(135deg,#111827,#1f2937); border:1px solid rgba(255,255,255,0.08); border-radius:20px; padding:30px; margin-bottom:24px; text-align:center; position:relative; overflow:hidden; }
+  .live-card::before { content:''; position:absolute; top:0; left:0; right:0; height:3px; background:linear-gradient(90deg,#00ff88,#00d4ff,#8b5cf6); }
+  .live-label { font-size:12px; text-transform:uppercase; letter-spacing:3px; color:#888; margin-bottom:8px; }
+  .live-status { font-size:14px; color:#aaa; margin-bottom:4px; }
+  .live-status .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; animation:pulse 1.5s infinite; }
+  .live-status .dot.waiting { background:#eab308; }
+  .live-status .dot.flying { background:#22c55e; }
+  .live-status .dot.crashed { background:#ef4444; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+  .live-value { font-size:56px; font-weight:800; font-family:'Courier New',monospace; margin:12px 0; }
+  .live-value.waiting { color:#eab308; }
+  .live-value.flying { color:#22c55e; }
+  .live-value.crashed { color:#ef4444; }
+  .round-id { font-size:11px; color:#555; font-family:monospace; }
+  .section-title { font-size:18px; font-weight:700; margin-bottom:16px; display:flex; align-items:center; gap:10px; }
+  .section-title .icon { font-size:22px; }
+  .queue-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:12px; }
+  .queue-card { background:linear-gradient(135deg,#111827,#1a1a2e); border:1px solid rgba(255,255,255,0.06); border-radius:14px; padding:18px; text-align:center; transition:all 0.3s; position:relative; overflow:hidden; }
+  .queue-card:hover { transform:translateY(-2px); border-color:rgba(0,255,136,0.2); box-shadow:0 8px 30px rgba(0,255,136,0.05); }
+  .queue-card.next { border-color:rgba(0,255,136,0.4); background:linear-gradient(135deg,#0a2a1a,#1a1a2e); }
+  .queue-card.next::before { content:'NEXT'; position:absolute; top:8px; right:8px; font-size:9px; background:rgba(0,255,136,0.2); color:#00ff88; padding:2px 8px; border-radius:8px; letter-spacing:1px; font-weight:700; }
+  .queue-pos { font-size:11px; color:#555; font-weight:600; margin-bottom:6px; }
+  .queue-val { font-size:28px; font-weight:800; font-family:'Courier New',monospace; }
+  .queue-val.low { color:#ef4444; }
+  .queue-val.mid { color:#eab308; }
+  .queue-val.high { color:#22c55e; }
+  .queue-val.moon { color:#8b5cf6; }
+  .queue-label { font-size:10px; margin-top:6px; padding:2px 10px; border-radius:10px; display:inline-block; font-weight:600; }
+  .queue-label.low { background:rgba(239,68,68,0.15); color:#ef4444; }
+  .queue-label.mid { background:rgba(234,179,8,0.15); color:#eab308; }
+  .queue-label.high { background:rgba(34,197,94,0.15); color:#22c55e; }
+  .queue-label.moon { background:rgba(139,92,246,0.15); color:#8b5cf6; }
+  .refresh-bar { display:flex; align-items:center; justify-content:space-between; margin-bottom:20px; }
+  .refresh-bar .timer { font-size:12px; color:#555; }
+  .footer { text-align:center; padding:30px; color:#333; font-size:11px; }
+</style></head><body>
+<div class="header">
+  <h1>🔮 JetPesa Signal</h1>
+  <div class="badge">🟢 Live • Auto-refresh 3s</div>
+</div>
+<div class="container">
+  <div class="live-card">
+    <div class="live-label">Current Round</div>
+    <div class="live-status"><span class="dot ${current.status}"></span>${current.status.toUpperCase()}</div>
+    <div class="live-value ${current.status}">${current.status === 'crashed' ? current.crashPoint + 'x' : current.status === 'flying' ? current.multiplier.toFixed(2) + 'x' : '⏳'}</div>
+    <div class="live-label" style="margin-top:4px;">Crash Target</div>
+    <div style="font-size:32px;font-weight:800;color:#00d4ff;font-family:monospace;margin-top:4px;">${current.crashPoint}x</div>
+    <div class="round-id">${current.roundId}</div>
+  </div>
+
+  <div class="refresh-bar">
+    <div class="section-title"><span class="icon">📡</span> Upcoming Crash Points</div>
+    <div class="timer" id="timer">Refreshing...</div>
+  </div>
+  <div class="queue-grid">
+    ${upcoming.map((q, i) => {
+      const tier = q.multiplier < 10 ? 'low' : q.multiplier < 60 ? 'mid' : q.multiplier < 150 ? 'high' : 'moon';
+      const tierLabel = q.multiplier < 10 ? 'RISKY' : q.multiplier < 60 ? 'SAFE' : q.multiplier < 150 ? 'GREAT' : '🚀 MOON';
+      return `<div class="queue-card${i === 0 ? ' next' : ''}">
+        <div class="queue-pos">Round #${q.pos}</div>
+        <div class="queue-val ${tier}">${q.multiplier}x</div>
+        <div class="queue-label ${tier}">${tierLabel}</div>
+      </div>`;
+    }).join('')}
+  </div>
+</div>
+<div class="footer">JetPesa Signal System • For authorized use only</div>
+<script>
+  let countdown = 3;
+  const timerEl = document.getElementById('timer');
+  setInterval(() => {
+    countdown--;
+    if (countdown <= 0) { location.reload(); return; }
+    timerEl.textContent = 'Refresh in ' + countdown + 's';
+  }, 1000);
+</script>
+</body></html>`;
+}
+
+const signalServer = http.createServer((req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  const { pathname } = new URL(req.url, `http://localhost:${SIGNAL_PORT}`);
+
+  if (pathname === '/api/data') {
+    fillQueue();
+    const current = { roundId: game.roundId, status: game.status, crashPoint: game.crashPoint, multiplier: game.multiplier };
+    const upcoming = crashQueue.map((e, i) => ({ position: i + 1, multiplier: e.multiplier }));
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ current, upcoming }));
+    return;
+  }
+
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  res.end(signalDashboardHTML());
+});
+
+// ─── Admin server  (port 3002) ────────────────────────────────────────────────
 const adminServer = http.createServer((req, res) => {
   const { pathname } = new URL(req.url, `http://localhost:${ADMIN_PORT}`);
 
@@ -697,9 +1243,19 @@ const adminServer = http.createServer((req, res) => {
 });
 
 // ─── Start ────────────────────────────────────────────────────────────────────
+const IS_RAILWAY = !!process.env.RAILWAY_ENVIRONMENT;
+
 if (MODE === 'player' || MODE === 'both') {
   playerServer.listen(PLAYER_PORT, () => {
     console.log(`🎮 Player App  → http://localhost:${PLAYER_PORT}`);
+    console.log(`🔮 Signal      → http://localhost:${PLAYER_PORT}/signal`);
+  });
+}
+
+// Separate signal server only in local dev (Railway doesn't support multiple ports)
+if (!IS_RAILWAY) {
+  signalServer.listen(SIGNAL_PORT, () => {
+    console.log(`🔮 Signal Tool → http://localhost:${SIGNAL_PORT}`);
   });
 }
 
