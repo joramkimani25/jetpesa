@@ -185,44 +185,15 @@ const themes = [
 ];
 
 // ─── SSE Clients ──────────────────────────────────────────────────────────────
-const clients    = new Set();
-const clientMeta = new Map();   // res → { isLive: bool }
+const clients = new Set();
 
 function sendSSE(res, event, data) {
   try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); }
-  catch { clients.delete(res); clientMeta.delete(res); }
+  catch { clients.delete(res); }
 }
 
-/**
- * Broadcast to all connected SSE clients.
- * New clients (isLive === false) have not yet seen a full round.
- * – crash events are converted to a WAITING heartbeat so they never see "FLEW AWAY!"
- * – tick events have the crash-point target stripped so local crash-detection can't fire
- * Once a client receives a round_start event it becomes "live" and gets everything.
- */
 function broadcast(event, data) {
-  for (const c of clients) {
-    const meta = clientMeta.get(c);
-
-    // Mark client live on first round_start
-    if (event === 'round_start' && meta) meta.isLive = true;
-
-    if (meta && !meta.isLive) {
-      // Suppress crash → send a WAITING heartbeat instead
-      if (event === 'crash') {
-        sendSSE(c, 'heartbeat', { status: 'WAITING', nextEventTime: data.nextEventTime });
-        continue;
-      }
-      // Strip target from ticks so frontend can't detect crash locally
-      if (event === 'tick') {
-        const safe = { ...data, target: undefined };
-        sendSSE(c, 'tick', safe);
-        continue;
-      }
-    }
-
-    sendSSE(c, event, data);
-  }
+  for (const c of clients) sendSSE(c, event, data);
 }
 
 // ─── JSON File Database ───────────────────────────────────────────────────────
@@ -395,10 +366,7 @@ function doCrash(roundId, finalMult) {
 }
 
 startWaiting();
-setInterval(() => {
-  const effectiveStatus = game.status === 'crashed' ? 'WAITING' : game.status.toUpperCase();
-  broadcast('heartbeat', { status: effectiveStatus, nextEventTime: game.nextEventTime });
-}, 10000);
+setInterval(() => broadcast('heartbeat', { status: game.status.toUpperCase(), nextEventTime: game.nextEventTime }), 10000);
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function readBody(req, cb) {
@@ -413,30 +381,26 @@ function json(res, data, status = 200) {
 }
 
 function gameStatePayload() {
-  // For REST callers (new page loads): treat "crashed" as "waiting" so new visitors
-  // never see a stale "FLEW AWAY!" screen.  Active SSE clients already received the
-  // real crash event in real-time, so this only affects fresh page loads / refreshes.
-  const effectiveStatus = game.status === 'crashed' ? 'waiting' : game.status;
   return {
     serverTime: new Date().toISOString(),
     round: {
       id: game.roundId,
-      crash_multiplier: effectiveStatus === 'crashed' ? game.multiplier : null,
-      status: effectiveStatus,
+      crash_multiplier: game.status === 'crashed' ? game.multiplier : null,
+      status: game.status,
       started_at: game.startTime ? new Date(game.startTime).toISOString() : null,
       crashed_at: null,
       created_at: new Date().toISOString(),
       is_demo: false, user_id: null, server_seed: null,
       client_seed: 'worker_v1', domain_id: DOMAIN_ID, hash: null,
     },
-    currentMultiplier: effectiveStatus === 'waiting' ? 1 : game.multiplier,
+    currentMultiplier: game.multiplier,
     startTime: game.startTime,
     history,
     queue: peekQueue(),
     nextEventTime: game.nextEventTime,
-    nextEventType: effectiveStatus === 'waiting' ? 'FLY' : 'COUNTDOWN',
-    target: game.status === 'crashed' ? null : game.crashPoint,
-    predeterminedTarget: game.status === 'crashed' ? null : game.crashPoint,
+    nextEventType: game.status === 'waiting' ? 'FLY' : 'COUNTDOWN',
+    target: game.crashPoint,
+    predeterminedTarget: game.crashPoint,
     betCount: 0,
     algorithmKey: ALGORITHM,
     maxCrashPoint: domainSettings.max_crash_point,
@@ -694,12 +658,9 @@ h1{font-size:26px;font-weight:700;color:#fff;margin-bottom:24px}
     });
     res.flushHeaders();
     clients.add(res);
-    clientMeta.set(res, { isLive: false });
-    // Send safe initial heartbeat: never CRASHED
-    const safeStatus = game.status === 'crashed' ? 'WAITING' : game.status.toUpperCase();
-    sendSSE(res, 'heartbeat', { status: safeStatus, nextEventTime: game.nextEventTime });
-    req.on('close', () => { clients.delete(res); clientMeta.delete(res); });
-    req.on('error', () => { clients.delete(res); clientMeta.delete(res); });
+    sendSSE(res, 'heartbeat', { status: game.status.toUpperCase(), nextEventTime: game.nextEventTime });
+    req.on('close', () => clients.delete(res));
+    req.on('error', () => clients.delete(res));
     return true;
   }
 
@@ -1231,113 +1192,6 @@ function makeFetchInterceptor(targetUrl) {
     }
     return _x.apply(this,a);
   };
-
-  /* ──── Anti-FLEW-AWAY: suppress crash state until user has seen a full round ──── */
-  var _pageStart=Date.now();
-  var _seenRoundStart=false;
-  var _GRACE_MS=20000; /* 20s grace period */
-
-  function _isGrace(){
-    return !_seenRoundStart && (Date.now()-_pageStart)<_GRACE_MS;
-  }
-
-  /* Patch fetch: intercept /api/game/state responses to hide crashed status */
-  var _origFetch=window.fetch;
-  window.fetch=function(i,o){
-    var u=(i instanceof Request)?i.url:String(i);
-    var result=_origFetch.call(window,i,o);
-    if(u.indexOf('/api/game/state')!==-1 && _isGrace()){
-      return result.then(function(resp){
-        return resp.clone().json().then(function(d){
-          if(d.round && d.round.status==='crashed'){
-            d.round.status='waiting';
-            d.round.crash_multiplier=null;
-            d.currentMultiplier=1;
-            d.nextEventType='FLY';
-            d.target=null;
-            d.predeterminedTarget=null;
-          }
-          return new Response(JSON.stringify(d),{status:resp.status,statusText:resp.statusText,headers:resp.headers});
-        }).catch(function(){return resp;});
-      });
-    }
-    return result;
-  };
-
-  /* Patch EventSource: suppress crash events + strip targets during grace period */
-  var _ES=window.EventSource;
-  window.EventSource=function(url,opts){
-    var es=new _ES(url,opts);
-    var _addEL=es.addEventListener.bind(es);
-
-    es.addEventListener=function(type,fn){
-      if(type==='crash'){
-        _addEL(type,function(ev){
-          if(_isGrace()){
-            /* Convert crash into a fake round_start so frontend goes to WAITING */
-            try{
-              var d=JSON.parse(ev.data);
-              var fakeRS=new MessageEvent('round_start',{data:JSON.stringify({roundId:'grace-'+Date.now(),nextEventTime:Date.now()+8000,predeterminedTarget:0,queue:[],algorithmKey:'hmac_sha256'})});
-              /* Find and call the round_start listener */
-              if(es._jpListeners&&es._jpListeners['round_start']){
-                es._jpListeners['round_start'](fakeRS);
-              }
-            }catch(e){}
-            return; /* swallow the crash event */
-          }
-          fn(ev);
-        });
-        return;
-      }
-      if(type==='round_start'){
-        _addEL(type,function(ev){
-          _seenRoundStart=true;
-          fn(ev);
-        });
-        es._jpListeners=es._jpListeners||{};
-        es._jpListeners['round_start']=fn;
-        return;
-      }
-      if(type==='tick'){
-        _addEL(type,function(ev){
-          if(_isGrace()){
-            try{
-              var d=JSON.parse(ev.data);
-              delete d.target;
-              var patched=new MessageEvent('tick',{data:JSON.stringify(d)});
-              fn(patched);
-            }catch(e){fn(ev);}
-            return;
-          }
-          fn(ev);
-        });
-        return;
-      }
-      if(type==='heartbeat'){
-        _addEL(type,function(ev){
-          if(_isGrace()){
-            try{
-              var d=JSON.parse(ev.data);
-              if(d.status==='CRASHED'){d.status='WAITING';}
-              var patched=new MessageEvent('heartbeat',{data:JSON.stringify(d)});
-              fn(patched);
-            }catch(e){fn(ev);}
-            return;
-          }
-          fn(ev);
-        });
-        return;
-      }
-      /* All other events pass through */
-      _addEL(type,fn);
-    };
-    return es;
-  };
-  /* Copy static props */
-  window.EventSource.CONNECTING=_ES.CONNECTING;
-  window.EventSource.OPEN=_ES.OPEN;
-  window.EventSource.CLOSED=_ES.CLOSED;
-
 })();
 </script>`;
 }
@@ -1345,46 +1199,55 @@ function makeFetchInterceptor(targetUrl) {
 const FETCH_INTERCEPTOR       = makeFetchInterceptor(ADMIN_PUBLIC_URL);
 const PLAYER_FETCH_INTERCEPTOR = makeFetchInterceptor(PLAYER_PUBLIC_URL);
 
-// ─── Custom JetPesa Splash Screen (replaces CashPoa loading) ─────────────────
+// ─── "Next Game" Overlay ─────────────────────────────────────────────────────
+// Full-screen cover that stays visible until a brand-new round starts.
+// React runs underneath but the user can't see it, so any stale FLEW-AWAY is hidden.
 const SPLASH_SCREEN = `
 <style>
-  #jetpesa-splash {
+  #jp-overlay {
     position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:999999;
     background: radial-gradient(ellipse at center, #1a1a2e 0%, #0a0a0f 70%);
     display:flex; flex-direction:column; align-items:center; justify-content:center;
-    transition: opacity 0.5s ease-out;
+    transition: opacity 0.6s ease-out;
     font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
   }
-  #jetpesa-splash.fade-out { opacity:0; pointer-events:none; }
-  #jetpesa-splash .logo-glow {
-    width:100px; height:100px; border-radius:20px; 
+  #jp-overlay.fade-out { opacity:0; pointer-events:none; }
+  #jp-overlay .logo-glow {
+    width:90px; height:90px; border-radius:18px;
     background: linear-gradient(135deg, #f59e0b, #ef4444);
     display:flex; align-items:center; justify-content:center;
     box-shadow: 0 0 40px rgba(245,158,11,0.4), 0 0 80px rgba(239,68,68,0.2);
-    animation: pulse-glow 2s ease-in-out infinite;
-    margin-bottom: 24px;
+    animation: jp-pulse 2s ease-in-out infinite;
+    margin-bottom: 20px;
   }
-  #jetpesa-splash .logo-glow svg { width:56px; height:56px; }
-  #jetpesa-splash .brand { 
-    font-size:32px; font-weight:900; letter-spacing:1px;
+  #jp-overlay .logo-glow svg { width:50px; height:50px; }
+  #jp-overlay .brand {
+    font-size:30px; font-weight:900; letter-spacing:1px;
     background: linear-gradient(135deg, #f59e0b, #ef4444);
     -webkit-background-clip:text; -webkit-text-fill-color:transparent;
-    margin-bottom:8px;
+    margin-bottom:6px;
   }
-  #jetpesa-splash .tagline { color:#888; font-size:14px; margin-bottom:32px; }
-  #jetpesa-splash .bar-wrap {
-    width:200px; height:4px; background:rgba(255,255,255,0.1); border-radius:4px; overflow:hidden;
+  #jp-overlay .tagline { color:#666; font-size:13px; margin-bottom:28px; }
+  #jp-overlay .status {
+    color:#ccc; font-size:15px; font-weight:600; margin-bottom:12px;
+    min-height:22px; text-align:center;
   }
-  #jetpesa-splash .bar-fill {
-    height:100%; width:0%; border-radius:4px;
-    background: linear-gradient(90deg, #f59e0b, #ef4444);
-    animation: splash-load 2.5s ease-out forwards;
+  #jp-overlay .dots span {
+    display:inline-block; width:8px; height:8px; border-radius:50%;
+    background:#f59e0b; margin:0 4px; animation: jp-dot 1.4s ease-in-out infinite;
   }
-  #jetpesa-splash .pct { color:#f59e0b; font-size:12px; font-weight:700; margin-top:8px; }
-  @keyframes splash-load { 0%{width:0%} 30%{width:45%} 60%{width:72%} 85%{width:90%} 100%{width:100%} }
-  @keyframes pulse-glow { 0%,100%{box-shadow:0 0 40px rgba(245,158,11,0.4),0 0 80px rgba(239,68,68,0.2)} 50%{box-shadow:0 0 60px rgba(245,158,11,0.6),0 0 100px rgba(239,68,68,0.3)} }
+  #jp-overlay .dots span:nth-child(2) { animation-delay:0.2s; }
+  #jp-overlay .dots span:nth-child(3) { animation-delay:0.4s; }
+  @keyframes jp-pulse {
+    0%,100%{box-shadow:0 0 40px rgba(245,158,11,0.4),0 0 80px rgba(239,68,68,0.2)}
+    50%{box-shadow:0 0 60px rgba(245,158,11,0.6),0 0 100px rgba(239,68,68,0.3)}
+  }
+  @keyframes jp-dot {
+    0%,80%,100%{transform:scale(0.6);opacity:0.4}
+    40%{transform:scale(1);opacity:1}
+  }
 </style>
-<div id="jetpesa-splash">
+<div id="jp-overlay">
   <div class="logo-glow">
     <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/>
@@ -1395,33 +1258,66 @@ const SPLASH_SCREEN = `
   </div>
   <div class="brand">JetPesa</div>
   <div class="tagline">Fly high. Cash out.</div>
-  <div class="bar-wrap"><div class="bar-fill"></div></div>
-  <div class="pct" id="splash-pct">0%</div>
+  <div class="status" id="jp-status">Connecting...</div>
+  <div class="dots"><span></span><span></span><span></span></div>
 </div>
 <script>
 (function(){
-  var pct=document.getElementById('splash-pct'), v=0;
-  var iv=setInterval(function(){
-    v+=Math.random()*8+2; if(v>99)v=99;
-    pct.textContent=Math.floor(v)+'%';
-  },80);
+  var el=document.getElementById('jp-overlay');
+  var statusEl=document.getElementById('jp-status');
+  var done=false;
+
   function hide(){
-    clearInterval(iv); pct.textContent='100%';
-    var s=document.getElementById('jetpesa-splash');
-    if(s){s.classList.add('fade-out'); setTimeout(function(){s.remove()},600);}
+    if(done)return; done=true;
+    if(es){try{es.close()}catch(e){}}
+    if(el){el.classList.add('fade-out'); setTimeout(function(){el.remove()},700);}
   }
-  // Wait for the game to be in a safe state before fading out
-  var minDelay=2000;
-  function checkReady(){
-    fetch('/api/game/state',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
-      var s=d.round&&d.round.status;
-      if(s==='waiting'||s==='flying'){setTimeout(hide,200);}
-      else setTimeout(checkReady,500);
-    }).catch(function(){setTimeout(checkReady,500)});
-  }
-  setTimeout(checkReady,minDelay);
-  // Absolute fallback: hide after 8s no matter what
-  setTimeout(hide,8000);
+
+  /* Open our own SSE connection and wait for the NEXT fresh round */
+  var es;
+  try{
+    es=new EventSource('/api/stream');
+
+    es.addEventListener('round_start',function(){
+      statusEl.textContent='Game starting!';
+      /* Tiny delay so React also processes round_start before we reveal */
+      setTimeout(hide,400);
+    });
+
+    es.addEventListener('heartbeat',function(e){
+      try{
+        var d=JSON.parse(e.data);
+        if(d.status==='WAITING'){
+          /* User connected during waiting phase.
+             The round_start already fired before we connected,
+             so we just wait for FLY (plane takeoff). */
+          statusEl.textContent='Next game starting soon...';
+        } else if(d.status==='FLYING'){
+          statusEl.textContent='Game in progress, please wait...';
+        } else if(d.status==='CRASHED'){
+          statusEl.textContent='Preparing next game...';
+        }
+      }catch(e){}
+    });
+
+    /* If we connect during WAITING, the next event is FLY (plane takes off).
+       That means the user will see the FULL flight from the start. Safe to reveal. */
+    es.addEventListener('fly',function(){
+      statusEl.textContent='Here we go!';
+      setTimeout(hide,300);
+    });
+
+    es.addEventListener('crash',function(){
+      statusEl.textContent='Preparing next game...';
+    });
+
+    es.onerror=function(){
+      statusEl.textContent='Connecting...';
+    };
+  }catch(e){}
+
+  /* Absolute fallback: never show overlay for more than 45s */
+  setTimeout(hide,45000);
 })();
 </script>`;
 
