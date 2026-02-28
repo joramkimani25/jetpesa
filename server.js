@@ -1199,6 +1199,82 @@ function makeFetchInterceptor(targetUrl) {
 const FETCH_INTERCEPTOR       = makeFetchInterceptor(ADMIN_PUBLIC_URL);
 const PLAYER_FETCH_INTERCEPTOR = makeFetchInterceptor(PLAYER_PUBLIC_URL);
 
+// ─── Custom JetPesa Splash Screen (replaces CashPoa loading) ─────────────────
+const SPLASH_SCREEN = `
+<style>
+  #jetpesa-splash {
+    position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:999999;
+    background: radial-gradient(ellipse at center, #1a1a2e 0%, #0a0a0f 70%);
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    transition: opacity 0.5s ease-out;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  }
+  #jetpesa-splash.fade-out { opacity:0; pointer-events:none; }
+  #jetpesa-splash .logo-glow {
+    width:100px; height:100px; border-radius:20px; 
+    background: linear-gradient(135deg, #f59e0b, #ef4444);
+    display:flex; align-items:center; justify-content:center;
+    box-shadow: 0 0 40px rgba(245,158,11,0.4), 0 0 80px rgba(239,68,68,0.2);
+    animation: pulse-glow 2s ease-in-out infinite;
+    margin-bottom: 24px;
+  }
+  #jetpesa-splash .logo-glow svg { width:56px; height:56px; }
+  #jetpesa-splash .brand { 
+    font-size:32px; font-weight:900; letter-spacing:1px;
+    background: linear-gradient(135deg, #f59e0b, #ef4444);
+    -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+    margin-bottom:8px;
+  }
+  #jetpesa-splash .tagline { color:#888; font-size:14px; margin-bottom:32px; }
+  #jetpesa-splash .bar-wrap {
+    width:200px; height:4px; background:rgba(255,255,255,0.1); border-radius:4px; overflow:hidden;
+  }
+  #jetpesa-splash .bar-fill {
+    height:100%; width:0%; border-radius:4px;
+    background: linear-gradient(90deg, #f59e0b, #ef4444);
+    animation: splash-load 2.5s ease-out forwards;
+  }
+  #jetpesa-splash .pct { color:#f59e0b; font-size:12px; font-weight:700; margin-top:8px; }
+  @keyframes splash-load { 0%{width:0%} 30%{width:45%} 60%{width:72%} 85%{width:90%} 100%{width:100%} }
+  @keyframes pulse-glow { 0%,100%{box-shadow:0 0 40px rgba(245,158,11,0.4),0 0 80px rgba(239,68,68,0.2)} 50%{box-shadow:0 0 60px rgba(245,158,11,0.6),0 0 100px rgba(239,68,68,0.3)} }
+</style>
+<div id="jetpesa-splash">
+  <div class="logo-glow">
+    <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/>
+      <path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/>
+      <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/>
+      <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>
+    </svg>
+  </div>
+  <div class="brand">JetPesa</div>
+  <div class="tagline">Fly high. Cash out.</div>
+  <div class="bar-wrap"><div class="bar-fill"></div></div>
+  <div class="pct" id="splash-pct">0%</div>
+</div>
+<script>
+(function(){
+  var pct=document.getElementById('splash-pct'), v=0;
+  var iv=setInterval(function(){
+    v+=Math.random()*8+2; if(v>99)v=99;
+    pct.textContent=Math.floor(v)+'%';
+  },80);
+  function hide(){
+    clearInterval(iv); pct.textContent='100%';
+    var s=document.getElementById('jetpesa-splash');
+    if(s){s.classList.add('fade-out'); setTimeout(function(){s.remove()},600);}
+  }
+  // Hide when React app renders (detects any content in #__next or body children)
+  var mo=new MutationObserver(function(muts){
+    var root=document.getElementById('__next')||document.querySelector('[data-nextjs-scroll-focus-boundary]');
+    if(root && root.children.length>0){ mo.disconnect(); setTimeout(hide,300); }
+  });
+  mo.observe(document.documentElement,{childList:true,subtree:true});
+  // Fallback: hide after 5s max
+  setTimeout(hide,5000);
+})();
+</script>`;
+
 // ─── Static file server ───────────────────────────────────────────────────────
 function serveStatic(staticDir, pathname, res, isAdmin) {
   let filePath;
@@ -1237,6 +1313,10 @@ function serveStatic(staticDir, pathname, res, isAdmin) {
       let html = data.toString('utf8');
       const interceptor = isAdmin ? FETCH_INTERCEPTOR : PLAYER_FETCH_INTERCEPTOR;
       html = html.replace('<head>', '<head>' + interceptor);
+      // Inject JetPesa splash screen for player pages (not admin)
+      if (!isAdmin) {
+        html = html.replace('<body>', '<body>' + SPLASH_SCREEN);
+      }
       res.writeHead(200, { 'Content-Type': mime });
       res.end(html);
     } else {
