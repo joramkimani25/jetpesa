@@ -1231,6 +1231,113 @@ function makeFetchInterceptor(targetUrl) {
     }
     return _x.apply(this,a);
   };
+
+  /* ──── Anti-FLEW-AWAY: suppress crash state until user has seen a full round ──── */
+  var _pageStart=Date.now();
+  var _seenRoundStart=false;
+  var _GRACE_MS=20000; /* 20s grace period */
+
+  function _isGrace(){
+    return !_seenRoundStart && (Date.now()-_pageStart)<_GRACE_MS;
+  }
+
+  /* Patch fetch: intercept /api/game/state responses to hide crashed status */
+  var _origFetch=window.fetch;
+  window.fetch=function(i,o){
+    var u=(i instanceof Request)?i.url:String(i);
+    var result=_origFetch.call(window,i,o);
+    if(u.indexOf('/api/game/state')!==-1 && _isGrace()){
+      return result.then(function(resp){
+        return resp.clone().json().then(function(d){
+          if(d.round && d.round.status==='crashed'){
+            d.round.status='waiting';
+            d.round.crash_multiplier=null;
+            d.currentMultiplier=1;
+            d.nextEventType='FLY';
+            d.target=null;
+            d.predeterminedTarget=null;
+          }
+          return new Response(JSON.stringify(d),{status:resp.status,statusText:resp.statusText,headers:resp.headers});
+        }).catch(function(){return resp;});
+      });
+    }
+    return result;
+  };
+
+  /* Patch EventSource: suppress crash events + strip targets during grace period */
+  var _ES=window.EventSource;
+  window.EventSource=function(url,opts){
+    var es=new _ES(url,opts);
+    var _addEL=es.addEventListener.bind(es);
+
+    es.addEventListener=function(type,fn){
+      if(type==='crash'){
+        _addEL(type,function(ev){
+          if(_isGrace()){
+            /* Convert crash into a fake round_start so frontend goes to WAITING */
+            try{
+              var d=JSON.parse(ev.data);
+              var fakeRS=new MessageEvent('round_start',{data:JSON.stringify({roundId:'grace-'+Date.now(),nextEventTime:Date.now()+8000,predeterminedTarget:0,queue:[],algorithmKey:'hmac_sha256'})});
+              /* Find and call the round_start listener */
+              if(es._jpListeners&&es._jpListeners['round_start']){
+                es._jpListeners['round_start'](fakeRS);
+              }
+            }catch(e){}
+            return; /* swallow the crash event */
+          }
+          fn(ev);
+        });
+        return;
+      }
+      if(type==='round_start'){
+        _addEL(type,function(ev){
+          _seenRoundStart=true;
+          fn(ev);
+        });
+        es._jpListeners=es._jpListeners||{};
+        es._jpListeners['round_start']=fn;
+        return;
+      }
+      if(type==='tick'){
+        _addEL(type,function(ev){
+          if(_isGrace()){
+            try{
+              var d=JSON.parse(ev.data);
+              delete d.target;
+              var patched=new MessageEvent('tick',{data:JSON.stringify(d)});
+              fn(patched);
+            }catch(e){fn(ev);}
+            return;
+          }
+          fn(ev);
+        });
+        return;
+      }
+      if(type==='heartbeat'){
+        _addEL(type,function(ev){
+          if(_isGrace()){
+            try{
+              var d=JSON.parse(ev.data);
+              if(d.status==='CRASHED'){d.status='WAITING';}
+              var patched=new MessageEvent('heartbeat',{data:JSON.stringify(d)});
+              fn(patched);
+            }catch(e){fn(ev);}
+            return;
+          }
+          fn(ev);
+        });
+        return;
+      }
+      /* All other events pass through */
+      _addEL(type,fn);
+    };
+    return es;
+  };
+  /* Copy static props */
+  window.EventSource.CONNECTING=_ES.CONNECTING;
+  window.EventSource.OPEN=_ES.OPEN;
+  window.EventSource.CLOSED=_ES.CLOSED;
+
 })();
 </script>`;
 }
@@ -1303,19 +1410,18 @@ const SPLASH_SCREEN = `
     var s=document.getElementById('jetpesa-splash');
     if(s){s.classList.add('fade-out'); setTimeout(function(){s.remove()},600);}
   }
-  // Wait for the game to be in a safe state (not crashed) before showing
-  var minDelay=2500, ready=false;
+  // Wait for the game to be in a safe state before fading out
+  var minDelay=2000;
   function checkReady(){
     fetch('/api/game/state',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
       var s=d.round&&d.round.status;
-      if(s==='waiting'||s==='flying'){ready=true; setTimeout(hide,300);}
-      else setTimeout(checkReady,800);
-    }).catch(function(){setTimeout(checkReady,1000)});
+      if(s==='waiting'||s==='flying'){setTimeout(hide,200);}
+      else setTimeout(checkReady,500);
+    }).catch(function(){setTimeout(checkReady,500)});
   }
-  // After minimum display time, start checking
   setTimeout(checkReady,minDelay);
-  // Absolute fallback: hide after 12s no matter what
-  setTimeout(hide,12000);
+  // Absolute fallback: hide after 8s no matter what
+  setTimeout(hide,8000);
 })();
 </script>`;
 
