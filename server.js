@@ -185,15 +185,44 @@ const themes = [
 ];
 
 // ─── SSE Clients ──────────────────────────────────────────────────────────────
-const clients = new Set();
+const clients    = new Set();
+const clientMeta = new Map();   // res → { isLive: bool }
 
 function sendSSE(res, event, data) {
   try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); }
-  catch { clients.delete(res); }
+  catch { clients.delete(res); clientMeta.delete(res); }
 }
 
+/**
+ * Broadcast to all connected SSE clients.
+ * New clients (isLive === false) have not yet seen a full round.
+ * – crash events are converted to a WAITING heartbeat so they never see "FLEW AWAY!"
+ * – tick events have the crash-point target stripped so local crash-detection can't fire
+ * Once a client receives a round_start event it becomes "live" and gets everything.
+ */
 function broadcast(event, data) {
-  for (const c of clients) sendSSE(c, event, data);
+  for (const c of clients) {
+    const meta = clientMeta.get(c);
+
+    // Mark client live on first round_start
+    if (event === 'round_start' && meta) meta.isLive = true;
+
+    if (meta && !meta.isLive) {
+      // Suppress crash → send a WAITING heartbeat instead
+      if (event === 'crash') {
+        sendSSE(c, 'heartbeat', { status: 'WAITING', nextEventTime: data.nextEventTime });
+        continue;
+      }
+      // Strip target from ticks so frontend can't detect crash locally
+      if (event === 'tick') {
+        const safe = { ...data, target: undefined };
+        sendSSE(c, 'tick', safe);
+        continue;
+      }
+    }
+
+    sendSSE(c, event, data);
+  }
 }
 
 // ─── JSON File Database ───────────────────────────────────────────────────────
@@ -366,7 +395,10 @@ function doCrash(roundId, finalMult) {
 }
 
 startWaiting();
-setInterval(() => broadcast('heartbeat', { status: game.status.toUpperCase(), nextEventTime: game.nextEventTime }), 10000);
+setInterval(() => {
+  const effectiveStatus = game.status === 'crashed' ? 'WAITING' : game.status.toUpperCase();
+  broadcast('heartbeat', { status: effectiveStatus, nextEventTime: game.nextEventTime });
+}, 10000);
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function readBody(req, cb) {
@@ -403,8 +435,8 @@ function gameStatePayload() {
     queue: peekQueue(),
     nextEventTime: game.nextEventTime,
     nextEventType: effectiveStatus === 'waiting' ? 'FLY' : 'COUNTDOWN',
-    target: game.crashPoint,
-    predeterminedTarget: game.crashPoint,
+    target: game.status === 'crashed' ? null : game.crashPoint,
+    predeterminedTarget: game.status === 'crashed' ? null : game.crashPoint,
     betCount: 0,
     algorithmKey: ALGORITHM,
     maxCrashPoint: domainSettings.max_crash_point,
@@ -662,11 +694,12 @@ h1{font-size:26px;font-weight:700;color:#fff;margin-bottom:24px}
     });
     res.flushHeaders();
     clients.add(res);
-    // On first connect: if game is crashed, tell client WAITING so they don't see "FLEW AWAY!" on load
-    const initialStatus = game.status === 'crashed' ? 'WAITING' : game.status.toUpperCase();
-    sendSSE(res, 'heartbeat', { status: initialStatus, nextEventTime: game.nextEventTime });
-    req.on('close', () => clients.delete(res));
-    req.on('error', () => clients.delete(res));
+    clientMeta.set(res, { isLive: false });
+    // Send safe initial heartbeat: never CRASHED
+    const safeStatus = game.status === 'crashed' ? 'WAITING' : game.status.toUpperCase();
+    sendSSE(res, 'heartbeat', { status: safeStatus, nextEventTime: game.nextEventTime });
+    req.on('close', () => { clients.delete(res); clientMeta.delete(res); });
+    req.on('error', () => { clients.delete(res); clientMeta.delete(res); });
     return true;
   }
 
@@ -1270,14 +1303,19 @@ const SPLASH_SCREEN = `
     var s=document.getElementById('jetpesa-splash');
     if(s){s.classList.add('fade-out'); setTimeout(function(){s.remove()},600);}
   }
-  // Hide when React app renders (detects any content in #__next or body children)
-  var mo=new MutationObserver(function(muts){
-    var root=document.getElementById('__next')||document.querySelector('[data-nextjs-scroll-focus-boundary]');
-    if(root && root.children.length>0){ mo.disconnect(); setTimeout(hide,300); }
-  });
-  mo.observe(document.documentElement,{childList:true,subtree:true});
-  // Fallback: hide after 5s max
-  setTimeout(hide,5000);
+  // Wait for the game to be in a safe state (not crashed) before showing
+  var minDelay=2500, ready=false;
+  function checkReady(){
+    fetch('/api/game/state',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
+      var s=d.round&&d.round.status;
+      if(s==='waiting'||s==='flying'){ready=true; setTimeout(hide,300);}
+      else setTimeout(checkReady,800);
+    }).catch(function(){setTimeout(checkReady,1000)});
+  }
+  // After minimum display time, start checking
+  setTimeout(checkReady,minDelay);
+  // Absolute fallback: hide after 12s no matter what
+  setTimeout(hide,12000);
 })();
 </script>`;
 
