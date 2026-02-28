@@ -381,24 +381,28 @@ function json(res, data, status = 200) {
 }
 
 function gameStatePayload() {
+  // For REST callers (new page loads): treat "crashed" as "waiting" so new visitors
+  // never see a stale "FLEW AWAY!" screen.  Active SSE clients already received the
+  // real crash event in real-time, so this only affects fresh page loads / refreshes.
+  const effectiveStatus = game.status === 'crashed' ? 'waiting' : game.status;
   return {
     serverTime: new Date().toISOString(),
     round: {
       id: game.roundId,
-      crash_multiplier: game.status === 'crashed' ? game.multiplier : null,
-      status: game.status,
+      crash_multiplier: effectiveStatus === 'crashed' ? game.multiplier : null,
+      status: effectiveStatus,
       started_at: game.startTime ? new Date(game.startTime).toISOString() : null,
       crashed_at: null,
       created_at: new Date().toISOString(),
       is_demo: false, user_id: null, server_seed: null,
       client_seed: 'worker_v1', domain_id: DOMAIN_ID, hash: null,
     },
-    currentMultiplier: game.multiplier,
+    currentMultiplier: effectiveStatus === 'waiting' ? 1 : game.multiplier,
     startTime: game.startTime,
     history,
     queue: peekQueue(),
     nextEventTime: game.nextEventTime,
-    nextEventType: game.status === 'waiting' ? 'FLY' : 'COUNTDOWN',
+    nextEventType: effectiveStatus === 'waiting' ? 'FLY' : 'COUNTDOWN',
     target: game.crashPoint,
     predeterminedTarget: game.crashPoint,
     betCount: 0,
@@ -658,7 +662,9 @@ h1{font-size:26px;font-weight:700;color:#fff;margin-bottom:24px}
     });
     res.flushHeaders();
     clients.add(res);
-    sendSSE(res, 'heartbeat', { status: game.status.toUpperCase(), nextEventTime: game.nextEventTime });
+    // On first connect: if game is crashed, tell client WAITING so they don't see "FLEW AWAY!" on load
+    const initialStatus = game.status === 'crashed' ? 'WAITING' : game.status.toUpperCase();
+    sendSSE(res, 'heartbeat', { status: initialStatus, nextEventTime: game.nextEventTime });
     req.on('close', () => clients.delete(res));
     req.on('error', () => clients.delete(res));
     return true;
