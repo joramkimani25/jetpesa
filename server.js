@@ -1,5 +1,5 @@
 /**
- * JetPesa Unified Local Dev Server
+ * JETPESA Unified Local Dev Server
  * ─────────────────────────────────────────────────────────────────
  *  Port 3000  →  Player app   (cashpoa.com/)
  *  Port 3001  →  Admin panel  (cashpoa.com admin/cashpoa.com/)
@@ -135,8 +135,8 @@ let game = {
 // ─── Domain Settings (admin-editable at runtime) ──────────────────────────────
 let domainSettings = {
   id: DOMAIN_ID,
-  domain: 'jetpesa.com',
-  brand_name: 'JetPesa',
+  domain: 'JetPesa.com',
+  brand_name: 'JETPESA',
   signal_url: 'sig',
   primary_color: '#000000',
   logo_url: '',
@@ -427,7 +427,7 @@ function handleAPI(pathname, req, res) {
 
   // Placeholder for missing promo images
   if (pathname.startsWith('/images/promo/')) {
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200"><rect width="400" height="200" rx="16" fill="#111827"/><text x="200" y="90" text-anchor="middle" fill="white" font-family="Arial" font-size="24" font-weight="bold">Welcome to JetPesa!</text><text x="200" y="130" text-anchor="middle" fill="#9ca3af" font-family="Arial" font-size="14">Deposit &amp; Start Winning</text></svg>`;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200"><rect width="400" height="200" rx="16" fill="#111827"/><text x="200" y="90" text-anchor="middle" fill="white" font-family="Arial" font-size="24" font-weight="bold">Welcome to JETPESA!</text><text x="200" y="130" text-anchor="middle" fill="#9ca3af" font-family="Arial" font-size="14">Deposit &amp; Start Winning</text></svg>`;
     res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=86400' });
     res.end(svg); return true;
   }
@@ -439,7 +439,7 @@ function handleAPI(pathname, req, res) {
 <html lang="en">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Terms of Use – JetPesa</title>
+<title>Terms of Use – JETPESA</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0a0a0f;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-serif;line-height:1.7}
@@ -498,7 +498,7 @@ li{margin-bottom:6px}
 <h2>10. Contact Us</h2>
 <p>If you have any questions about these Terms of Use, please contact our support team.</p>
 
-<div class="footer">&copy; 2026 JetPesa. All rights reserved.</div>
+<div class="footer">&copy; 2026 JETPESA. All rights reserved.</div>
 </div>
 </body>
 </html>`);
@@ -512,7 +512,7 @@ li{margin-bottom:6px}
 <html lang="en">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Profile – JetPesa</title>
+<title>Profile – JETPESA</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0a0a0f;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-serif;line-height:1.7}
@@ -1138,7 +1138,7 @@ const PLAYER_PUBLIC_URL = process.env.PLAYER_PUBLIC_URL || (IS_RAILWAY ? `https:
 
 function makeFetchInterceptor(targetUrl) {
   return `<script>
-/* JetPesa: proxy Supabase → local server + session sync */
+/* JETPESA: proxy Supabase → local server + session sync */
 (function(){
   // Sync our accessToken into Supabase's storage key so getSession() finds it
   var SK='sb-session';
@@ -1268,7 +1268,7 @@ function signalDashboardHTML() {
 
   return `<!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>JetPesa Signal</title>
+<title>JETPESA Signal</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body { background:#0a0a0f; color:#fff; font-family:'Segoe UI',system-ui,sans-serif; min-height:100vh; }
@@ -1313,7 +1313,7 @@ function signalDashboardHTML() {
   .footer { text-align:center; padding:30px; color:#333; font-size:11px; }
 </style></head><body>
 <div class="header">
-  <h1>🔮 JetPesa Signal</h1>
+  <h1>🔮 JETPESA Signal</h1>
   <div class="badge">🟢 Live • Auto-refresh 3s</div>
 </div>
 <div class="container">
@@ -1342,7 +1342,7 @@ function signalDashboardHTML() {
     }).join('')}
   </div>
 </div>
-<div class="footer">JetPesa Signal System • For authorized use only</div>
+<div class="footer">JETPESA Signal System • For authorized use only</div>
 <script>
   let countdown = 3;
   const timerEl = document.getElementById('timer');
